@@ -5,6 +5,11 @@ the core of [Microsoft Presidio](https://github.com/microsoft/presidio)'s
 analyzer, meant to be **imported and
 invoked in-process** no service, no network, no models to download.
 
+> [!WARNING]
+> **Experimental — under active development.** Until `v1.0.0`, the public API is
+> not stable and may change between releases, including breaking changes. Pin a
+> specific version and review the release notes before upgrading.
+
 ```go
 eng := alcatraz.NewEngine()
 for _, hit := range eng.Analyze("email me at jane@example.com", alcatraz.Options{}) {

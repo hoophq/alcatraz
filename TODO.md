@@ -36,7 +36,7 @@ lives in a **separate module** so importers of the core never pull the dep.
 ## Context-aware scoring (precision prerequisite for NER)
 
 - [ ] Activate the currently-inert context words: `PatternRecognizer.WithContext`
-      stores words but does nothing. Implement Presidio-style score enhancement
+      stores words but does nothing. Implement context-based score enhancement
       (boost a match when context words appear near the span).
 - [ ] Define cross-recognizer overlap handling: `analyzer.RemoveDuplicates` only
       de-duplicates **same-entity** overlaps today. Decide how an NER `PERSON`

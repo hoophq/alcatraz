@@ -19,7 +19,7 @@ func hasEntity(results []alcatraz.Result, entityType, text string) bool {
 func TestSmoke(t *testing.T) {
 	eng := alcatraz.NewEngine()
 	// 536-90-4399 is a structurally valid SSN (123-45-6789 is rejected as
-	// sequential, matching Presidio's own behavior).
+	// sequential by the SSN validator).
 	text := "Email jane.doe@example.com, card 4532015112830366, ssn 536-90-4399."
 	got := eng.Analyze(text, alcatraz.Options{})
 

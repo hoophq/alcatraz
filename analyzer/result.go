@@ -1,7 +1,6 @@
 // Package analyzer is the detection framework for alcatraz: the recognizer
 // contract, regex pattern recognizers, the registry and the engine that runs
-// them. It is a pure-Go, dependency-free port of the pattern-based core of
-// Microsoft Presidio's analyzer.
+// them. It is pure Go and dependency-free.
 //
 // The framework is deliberately separate from the concrete recognizers (which
 // live in the recognizers package) so callers can build a custom engine with

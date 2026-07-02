@@ -1,22 +1,17 @@
-# Alcatraz
+<div align="center">
 
-A pure-Go, dependency-free PII detection library. It is a pattern-based port of
-the core of [Microsoft Presidio](https://github.com/microsoft/presidio)'s
-analyzer, meant to be **imported and
-invoked in-process** no service, no network, no models to download.
+# 🪨 Alcatraz
 
-> [!WARNING]
-> **Experimental — under active development.** Until `v1.0.0`, the public API is
-> not stable and may change between releases, including breaking changes. Pin a
-> specific version and review the release notes before upgrading.
+### PII detection for Go. In-process, dependency-free.
 
-> [!NOTE]
-> **Detection is pattern-based only — there is no machine-learning engine yet.**
-> No NER (named-entity recognition) and no LLM models. Entities that need a
-> statistical model (e.g. `PERSON`, `LOCATION`, `NRP`) are **not** detected
-> today. This is planned, not fundamental: the `analyzer.Recognizer` interface
-> is the seam where such backends will plug in. See [TODO.md](TODO.md) for the
-> roadmap.
+Emails, credit cards, national IDs — **45 entity types across 12 countries** —
+detected with a function call. No service, no network, no models to download.
+
+[![CI](https://github.com/hoophq/alcatraz/actions/workflows/test.yml/badge.svg)](https://github.com/hoophq/alcatraz/actions/workflows/test.yml)
+&nbsp;·&nbsp; [![Go Reference](https://pkg.go.dev/badge/github.com/hoophq/alcatraz.svg)](https://pkg.go.dev/github.com/hoophq/alcatraz)
+&nbsp;·&nbsp; Go 1.24+ &nbsp;·&nbsp; stdlib only
+
+</div>
 
 ```go
 eng := alcatraz.NewEngine()
@@ -26,6 +21,41 @@ for _, hit := range eng.Analyze("email me at jane@example.com", alcatraz.Options
 // EMAIL_ADDRESS jane@example.com 0.5
 ```
 
+Where most PII analyzers are services you deploy and call over HTTP, Alcatraz
+is a library you `go get` and invoke in-process.
+
+> [!WARNING]
+> **Experimental — under active development.** Until `v1.0.0` the public API may
+> change between releases, including breaking changes. Pin a version and read
+> the release notes before upgrading.
+
+---
+
+## Why Alcatraz
+
+- ✅ **Verified, not just shape-matched.** 25 of the 45 recognizers carry a real
+  checksum validator — Luhn (credit cards), ISO 7064 mod-97 (IBAN), Verhoeff
+  (Aadhaar), the Brazilian mod-11 schemes (CPF, CNPJ, CNH, PIS), and more. A
+  16-digit number that fails Luhn is *dropped*, not flagged.
+- 🪶 **Zero dependencies.** The core imports nothing outside the Go standard
+  library. Your dependency tree stays exactly as it was.
+- ⚡ **In-process.** No sidecar to deploy, no HTTP round-trip, no serialization.
+  Detection is a function call on a `string`.
+- ⏱️ **Linear-time by construction.** Built on Go's RE2 `regexp` — no
+  backtracking, no catastrophic-ReDoS surface. (Need lookaround? There's an
+  [opt-in module](#advanced-matching-lookahead--lookbehind) that keeps the core clean.)
+- 🧩 **Extensible.** Every detector implements one interface,
+  `analyzer.Recognizer` — plug in your own patterns today, ML/NER backends
+  tomorrow.
+
+> [!NOTE]
+> **Detection is pattern-based only — there is no machine-learning engine yet.**
+> Entities that need a statistical model (`PERSON`, `LOCATION`, `NRP`) are not
+> detected today. This is planned, not fundamental — see the
+> [roadmap](#roadmap).
+
+---
+
 ## Install
 
 ```bash
@@ -34,27 +64,7 @@ go get github.com/hoophq/alcatraz
 
 Requires Go 1.24+. The standard library is the only dependency.
 
-## How it works
-
-Detection is purely **pattern-based**: each recognizer is one or more regular
-expressions plus, for entities with a verifiable structure, a checksum/format
-validator. The pipeline mirrors Presidio:
-
-1. Every applicable recognizer runs its regexes over the text.
-2. A matched span is scored at the pattern's base confidence; a validator then
-   either promotes it to `1.0` (verified) or drops it (failed checksum).
-3. Overlapping spans **of the same entity type** are de-duplicated (the
-   enclosing/higher-scoring span wins). Different entity types never suppress
-   each other.
-4. An optional score threshold and allow list are applied.
-5. Each surviving result is annotated with the matched substring (`Result.Text`).
-
-25 of the 45 recognizers carry a real validator — Luhn (credit cards), ISO 7064
-mod-97 (IBAN), Verhoeff (Aadhaar), the Brazilian mod-11 schemes (CPF, CNPJ,
-CNH, PIS), and the various national weighted-modulus and check-letter schemes —
-so structured identifiers are verified, not just shape-matched.
-
-## API
+## Quickstart
 
 ```go
 // Build an engine with the full built-in recognizer set (English by default).
@@ -62,9 +72,9 @@ eng := alcatraz.NewEngine()
 
 results := eng.Analyze(text, alcatraz.Options{
     Entities:       []string{entities.CreditCard}, // optional: restrict types
-    Threshold:      ptr(0.4),                       // optional: drop low scores
-    AllowList:      []string{"4111111111111111"},   // optional: ignore values
-    AllowListRegex: false,                          // treat AllowList as regex
+    Threshold:      ptr(0.4),                      // optional: drop low scores
+    AllowList:      []string{"4111111111111111"},  // optional: ignore values
+    AllowListRegex: false,                         // treat AllowList as regex
 })
 
 for _, r := range results {
@@ -72,10 +82,15 @@ for _, r := range results {
 }
 ```
 
-`Options{}` (the zero value) analyzes English text with every recognizer and no
-threshold. `Result` offsets are byte indices, so `text[r.Start:r.End] == r.Text`.
+`Options{}` (the zero value) analyzes with every recognizer and no threshold.
+`Result` offsets are byte indices, so `text[r.Start:r.End] == r.Text`.
 
-## Supported entities (45)
+---
+
+## What it detects
+
+45 entity types. ✓ = checksum/format validated, so structured identifiers are
+**verified**, not just shape-matched. Constants live in the `entities` package.
 
 | Group | Entity types |
 |-------|--------------|
@@ -90,14 +105,34 @@ threshold. `Result` offsets are byte indices, so `text[r.Start:r.End] == r.Text`
 | Brazil | `BR_CPF`✓, `BR_CNPJ`✓, `BR_RG`, `BR_CNH`✓, `BR_PIS`✓ |
 | Other | `PL_PESEL`✓, `KR_RRN`✓, `FI_PERSONAL_IDENTITY_CODE`✓, `TH_TNIN`✓ |
 
-✓ = checksum/format validated. Constants live in the `entities` package.
+Every built-in detects a **language-independent** structured identifier — an
+IBAN or a Thai national ID looks the same in any surrounding text — so the
+complete set is active under whichever language an engine is built with. (The
+language key is retained for future language-specific recognizers such as
+ML/NER.)
 
-Because every built-in detects a **language-independent** structured identifier,
-the complete set is registered under whichever language an engine is built with,
-so a default English engine detects all of them. (The language key is retained
-for future language-specific recognizers such as ML/NER.)
+---
 
-## Extending
+## How it works
+
+```
+text  →  recognizers (regex)  →  validators (checksum)  →  dedup  →  threshold + allow list  →  results
+```
+
+The pipeline:
+
+1. Every applicable recognizer runs its regexes over the text.
+2. A matched span is scored at the pattern's base confidence; a validator then
+   either promotes it to `1.0` (verified) or drops it (failed checksum).
+3. Overlapping spans **of the same entity type** are de-duplicated (the
+   enclosing/higher-scoring span wins). Different entity types never suppress
+   each other.
+4. An optional score threshold and allow list are applied.
+5. Each surviving result is annotated with the matched substring (`Result.Text`).
+
+---
+
+## Make it yours
 
 Add your own detector by implementing `analyzer.Recognizer` (or reuse
 `analyzer.PatternRecognizer`) and registering it:
@@ -118,14 +153,13 @@ the framework assumes regex.
 
 ## Advanced matching: lookahead & lookbehind
 
-Go's standard `regexp` (RE2) deliberately omits lookaround and backreferences to
-guarantee linear-time matching and resist ReDoS. alcatraz keeps that guarantee
-in its core and offers three escalating tools — the first two are pure-Go and
-dependency-free, and cover essentially every real lookaround need:
+Go's RE2 `regexp` deliberately omits lookaround and backreferences to guarantee
+linear-time matching. Alcatraz keeps that guarantee in its core and offers
+three escalating tools — the first two are pure-Go and cover essentially every
+real lookaround need:
 
 **A — Context-aware validator.** For "match X only when surrounded by Y". The
-validator sees the full text and the match's byte span, so it can inspect what
-comes before/after:
+validator sees the full text and the match's byte span:
 
 ```go
 rec := analyzer.NewPatternRecognizer("PinRule", "PIN", "en",
@@ -146,15 +180,14 @@ captured entity. `WithGroup(n)` selects which group becomes the result span:
 p := analyzer.MustPattern("user", `user=(\w+)`, 0.9).WithGroup(1)
 ```
 
-None of the 40 built-ins need more than A + B — they lean on `\b` anchors plus
-validators and same-entity dedup, which already handle "don't match a sub-span
-of a longer token".
+None of the 45 built-ins need more than A + B — they lean on `\b` anchors plus
+validators and same-entity dedup.
 
 **C — True lookaround for user-configured patterns.** When a rule genuinely
 needs `(?<=…)`, `(?=…)`, `(?!…)` or backreferences — e.g. regexes supplied in a
 config file — use the optional **`alcatraz/lookaround`** module. It is a
 *separate module*, so importing it is the only way to pull in the backtracking
-engine ([`dlclark/regexp2`](https://github.com/dlclark/regexp2)); the alcatraz
+engine ([`dlclark/regexp2`](https://github.com/dlclark/regexp2)); the Alcatraz
 core stays dependency-free and linear-time.
 
 ```go
@@ -173,23 +206,43 @@ go get github.com/hoophq/alcatraz/lookaround   # regexp2 only for importers of t
 ```
 
 Backtracking has no linear-time guarantee, so every compiled matcher carries a
-`MatchTimeout` (default 1s) to bound catastrophic backtracking (ReDoS); set your
-own with `CompileWithTimeout`. Matches report byte offsets just like the core
-(regexp2 works in rune space internally — the module converts), so results
-compose seamlessly through the same `Engine`.
+`MatchTimeout` (default 1s) to bound catastrophic backtracking (ReDoS); set
+your own with `CompileWithTimeout`. Matches report byte offsets just like the
+core, so results compose seamlessly through the same `Engine`.
 
-## Limitations
+---
 
-- **No ML engine yet — pattern-based only.** There is no NER or LLM backend, so
-  entities that need a statistical model (`PERSON`, `LOCATION`, `NRP`) are not
-  emitted, even though constants exist for them. This is planned, not
-  fundamental — `analyzer.Recognizer` is the integration seam; see
-  [TODO.md](TODO.md).
-- **Default threshold is 0.** Some recognizers are intentionally low-confidence
-  (e.g. `US_BANK_NUMBER` at 0.05 for any 8–17 digit run). Set `Options.Threshold`
-  to trade recall for precision.
-- Patterns favor recall and faithfulness to the reference implementation over
-  locale-perfect validation.
+## What Alcatraz is — and isn't
+
+Alcatraz is a **pattern engine**: regexes plus checksum validators, verified
+against the schemes each identifier actually uses. That makes it precise on
+structured identifiers and honest about the rest:
+
+- **No ML engine yet.** Free-text entities (`PERSON`, `LOCATION`, `NRP`) need
+  a statistical model and are not emitted, even though constants exist for
+  them. The `analyzer.Recognizer` interface is the integration seam — see the
+  roadmap below.
+- **The default threshold is 0.** Some recognizers are intentionally
+  low-confidence (e.g. `US_BANK_NUMBER` at 0.05 for any 8–17 digit run). Set
+  `Options.Threshold` to trade recall for precision.
+- **Recall over locale-perfection.** Patterns favor catching real identifiers
+  over locale-perfect validation of every edge case.
+
+---
+
+## Roadmap
+
+- [x] 45 pattern recognizers, 25 checksum-validated
+- [x] Opt-in `lookaround` module — true lookaround without polluting the core
+- [ ] Context-word score boosting (raise a match's confidence when related
+      words appear near the span)
+- [ ] ML/NER backend for `PERSON`, `LOCATION`, `NRP` — shipped as a separate
+      module, same pattern as `lookaround`
+- [ ] Optional LLM-backed detection/validation — separate module, explicit
+      opt-in
+- [ ] Precision/recall benchmark suite against a labeled corpus
+
+See [TODO.md](TODO.md) for the detailed plan.
 
 ## Layout
 
@@ -198,13 +251,18 @@ alcatraz.go        Public entry point: NewEngine + re-exported types.
 entities/          Canonical entity-type identifier constants.
 analyzer/          Framework: Result, dedup, Recognizer, Pattern, Matcher,
                    PatternRecognizer, Registry, Engine, allow list.
-recognizers/       The 40 built-in recognizers, checksum helpers, loader.
+recognizers/       The 45 built-in recognizers, checksum helpers, loader.
 lookaround/        Optional, separate module: regexp2-backed Matcher for
-                   lookahead/lookbehind in user-configured patterns (C).
+                   lookahead/lookbehind in user-configured patterns.
 ```
 
 ## Tests
 
 ```bash
-go test ./...
+go test ./...                    # core
+cd lookaround && go test ./...   # lookaround module
 ```
+
+---
+
+Built by the team behind [hoop.dev](https://hoop.dev).

@@ -54,10 +54,10 @@ func (e *Engine) SupportedEntities(language string) []string {
 	return e.registry.SupportedEntities(language)
 }
 
-// Analyze detects entities in text. The pipeline mirrors Presidio: run every
-// applicable recognizer, de-duplicate overlapping same-type spans, apply the
-// score threshold, then the allow list. Matched substrings are filled into
-// each result's Text field.
+// Analyze detects entities in text. The pipeline: run every applicable
+// recognizer, de-duplicate overlapping same-type spans, apply the score
+// threshold, then the allow list. Matched substrings are filled into each
+// result's Text field.
 func (e *Engine) Analyze(text string, o Options) []Result {
 	lang := o.Language
 	if lang == "" {

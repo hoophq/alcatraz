@@ -1,5 +1,5 @@
-// Package alcatraz is a pure-Go, dependency-free PII detection library: a
-// pattern-based port of the core of Microsoft Presidio's analyzer.
+// Package alcatraz is a pure-Go, dependency-free, pattern-based PII
+// detection library.
 //
 // It is meant to be imported and invoked in-process — no service, no network:
 //

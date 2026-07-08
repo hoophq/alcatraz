@@ -240,10 +240,17 @@ func TestEnsureLibraryRedownloadsCorruptedCache(t *testing.T) {
 }
 
 func TestEnsureLibraryUnsupportedPlatform(t *testing.T) {
+	// Remove the current platform from the support matrix so the
+	// unsupported branch is exercised regardless of the host.
 	key := runtime.GOOS + "-" + runtime.GOARCH
-	if _, ok := libraryChecksums[key]; ok {
-		t.Skipf("a prebuilt libpf exists for %s; nothing to test", key)
-	}
+	orig, had := libraryChecksums[key]
+	delete(libraryChecksums, key)
+	t.Cleanup(func() {
+		if had {
+			libraryChecksums[key] = orig
+		}
+	})
+
 	_, err := EnsureLibrary(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "no prebuilt libpf") {
 		t.Fatalf("want no-prebuilt error, got %v", err)

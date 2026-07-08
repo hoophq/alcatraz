@@ -133,6 +133,41 @@ The pipeline:
 
 ---
 
+## Anonymize: mask, replace, redact
+
+Detection gives you spans; the `anonymizer` package turns them into sanitized
+text. Pick an operator — mask with the character of your choice (`#`, `*`, …),
+keep a recognizable tail, replace with a placeholder, or redact — and apply it
+to the results of an `Analyze` call:
+
+```go
+import "github.com/hoophq/alcatraz/anonymizer"
+
+text := "Email jane@example.com, card 4532015112830366, ssn 536-90-4399."
+results := eng.Analyze(text, alcatraz.Options{})
+
+anonymizer.Anonymize(text, results, anonymizer.Mask('*'))
+// Email ****************, card ****************, ssn ***********.
+
+anonymizer.AnonymizeWith(text, results, anonymizer.Config{
+    Default: anonymizer.Replace(), // <ENTITY_TYPE> placeholders
+    PerEntity: map[string]anonymizer.Operator{
+        entities.CreditCard: anonymizer.MaskKeepLast('#', 4),
+    },
+})
+// Email <EMAIL_ADDRESS>, card ############0366, ssn <US_SSN>.
+```
+
+Built-in operators: `Mask(char)` (length-preserving, one mask rune per text
+rune), `MaskKeepLast(char, n)`, `Replace()`, `ReplaceWith(s)`, `Redact()`. An
+`Operator` is just a `func(entityType, match string) string`, so hashing,
+tokenization or encryption plug in the same way. Overlapping spans of
+different entity types are resolved before replacement — the higher-scoring
+span wins and the rest is trimmed, never leaked. Pure Go, dependency-free,
+part of the core module.
+
+---
+
 ## Make it yours
 
 Add your own detector by implementing `analyzer.Recognizer` (or reuse
@@ -368,6 +403,7 @@ entities/          Canonical entity-type identifier constants.
 analyzer/          Framework: Result, dedup, Recognizer, Pattern, Matcher,
                    PatternRecognizer, Registry, Engine, allow list, and the
                    NLP seam (NlpEngine, NlpArtifacts, ArtifactRecognizer).
+anonymizer/        Mask/replace/redact detected spans (Operator, Config).
 recognizers/       The 45 built-in recognizers, checksum helpers, loader.
 lookaround/        Optional, separate module: regexp2-backed Matcher for
                    lookahead/lookbehind in user-configured patterns.

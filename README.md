@@ -65,6 +65,36 @@ go get github.com/hoophq/alcatraz
 
 Requires Go 1.24+. The standard library is the only dependency.
 
+## The CLI
+
+The library also ships as a small command-line scanner — same engine, same
+zero-network posture. Scan files, stdin, or a unified diff; detected values
+are always masked in the output.
+
+```bash
+# Homebrew (macOS & Linux)
+brew install hoophq/tap/alcatraz
+
+# or grab a checksum-verified binary from GitHub releases, or build from source
+go install github.com/hoophq/alcatraz/cmd/alcatraz@latest
+```
+
+```bash
+alcatraz scan secrets.log app.log      # scan files line by line
+git diff | alcatraz diff               # scan only the lines a diff adds
+pbpaste | alcatraz scan                # scan pasted text from stdin
+alcatraz scan -json report.log         # machine-readable output (masked too)
+```
+
+Exit codes are grep-style: `0` clean, `1` findings, `2` error. Flags:
+`-threshold` (default 0.4), `-entities`, `-ignore` (default `DATE_TIME,URL`),
+`-allowlist-file` (one allowed value per line, `#` comments), and `-exclude`
+(diff mode, glob patterns of paths to skip).
+
+The CLI powers the [Hoop plugin for Claude Code](https://github.com/hoophq/claude-marketplace)'s
+`/hoop:pii-scan` command and pairs with
+[alcatraz-action](https://github.com/hoophq/alcatraz-action) for CI.
+
 ## Quickstart
 
 ```go

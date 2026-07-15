@@ -1,0 +1,188 @@
+name: Binary Release
+
+# Auto Release creates the vX.Y.Z tag/release with GITHUB_TOKEN, and a tag
+# pushed by GITHUB_TOKEN cannot start a `push: tags` workflow. So this chains
+# off Auto Release's completion: it builds the alcatraz CLI (cmd/alcatraz)
+# for darwin/linux, uploads the archives and checksums to that release, and
+# publishes the Homebrew formula to hoophq/homebrew-tap (the shared tap), so
+# users can `brew install hoophq/tap/alcatraz`.
+on:
+  workflow_run:
+    workflows: ["Auto Release"]
+    types: [completed]
+
+permissions:
+  contents: write
+
+# Serialize runs: back-to-back releases would otherwise race on pushing the
+# formula commit to the tap.
+concurrency:
+  group: binary-release
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Resolve release tag
+    runs-on: ubuntu-latest
+    # Auto Release runs on every push to main; act only on successful runs.
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    outputs:
+      publish: ${{ steps.tag.outputs.publish }}
+      version: ${{ steps.tag.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The exact commit Auto Release ran on. fetch-depth: 0 brings the
+          # tags so we can read the version tag it created at that commit.
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      - name: Find the release tag at this commit
+        id: tag
+        run: |
+          set -euo pipefail
+          # Auto Release tags the released commit vX.Y.Z, or tags nothing for
+          # a skip-release PR or a direct push. Bind the published version to
+          # that tag so source and version always match; skip when absent.
+          TAG=$(git tag --points-at HEAD | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)
+          if [ -z "$TAG" ]; then
+            echo "No release tag at ${{ github.event.workflow_run.head_sha }}; nothing to publish."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+            echo "Publishing ${TAG}"
+          fi
+
+  binaries:
+    name: Build archives & update tap
+    needs: resolve
+    if: ${{ needs.resolve.outputs.publish == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Cross-compile and package archives
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for os in darwin linux; do
+            for arch in amd64 arm64; do
+              stage="dist/stage_${os}_${arch}"
+              mkdir -p "$stage"
+              CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
+                go build -trimpath -ldflags "-s -w -X main.version=v${VERSION}" \
+                -o "$stage/alcatraz" ./cmd/alcatraz
+              cp README.md LICENSE "$stage/"
+              tar -czf "dist/alcatraz_${VERSION}_${os}_${arch}.tar.gz" \
+                -C "$stage" alcatraz README.md LICENSE
+            done
+          done
+          # Bare globs (no ./ prefix): installers grep checksums.txt for the
+          # exact archive name.
+          (cd dist && sha256sum -- *.tar.gz > checksums.txt && cat checksums.txt)
+
+      - name: Attach archives to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: v${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          # --clobber lets a re-run replace assets instead of failing on
+          # "asset already exists". checksums.txt is consumed by installers.
+          gh release upload "$TAG" dist/*.tar.gz dist/checksums.txt \
+            --clobber --repo "${{ github.repository }}"
+
+      - name: Render the Homebrew formula
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          sha() { grep "alcatraz_${VERSION}_$1.tar.gz" dist/checksums.txt | awk '{print $1}'; }
+          base="https://github.com/${{ github.repository }}/releases/download/v${VERSION}"
+          cat > dist/alcatraz.rb <<EOF
+          class Alcatraz < Formula
+            desc "Known-pattern PII detection CLI - in-process, no service, no network"
+            homepage "https://github.com/hoophq/alcatraz"
+            version "${VERSION}"
+            license "MIT"
+
+            on_macos do
+              on_arm do
+                url "${base}/alcatraz_${VERSION}_darwin_arm64.tar.gz"
+                sha256 "$(sha darwin_arm64)"
+              end
+              on_intel do
+                url "${base}/alcatraz_${VERSION}_darwin_amd64.tar.gz"
+                sha256 "$(sha darwin_amd64)"
+              end
+            end
+
+            on_linux do
+              on_arm do
+                url "${base}/alcatraz_${VERSION}_linux_arm64.tar.gz"
+                sha256 "$(sha linux_arm64)"
+              end
+              on_intel do
+                url "${base}/alcatraz_${VERSION}_linux_amd64.tar.gz"
+                sha256 "$(sha linux_amd64)"
+              end
+            end
+
+            def install
+              bin.install "alcatraz"
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/alcatraz version")
+            end
+          end
+          EOF
+          cat dist/alcatraz.rb
+
+      - name: Tap publish skipped (no HOMEBREW_TAP_TOKEN)
+        if: ${{ secrets.HOMEBREW_TAP_TOKEN == '' }}
+        run: echo "::warning::HOMEBREW_TAP_TOKEN is not set — release assets are published, but Formula/alcatraz.rb was not pushed to hoophq/homebrew-tap."
+
+      - name: Check out the tap
+        if: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
+        uses: actions/checkout@v4
+        with:
+          # A cross-repo push needs a token with write access to the tap; the
+          # default GITHUB_TOKEN is scoped to this repo only. Same secret the
+          # other hoop tools use for their tap publishes.
+          repository: hoophq/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Update and push the formula
+        if: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p tap/Formula
+          cp dist/alcatraz.rb tap/Formula/alcatraz.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/alcatraz.rb
+          # A re-run produces identical archives and checksums, so there may
+          # be nothing to commit.
+          if git diff --cached --quiet; then
+            echo "Formula already up to date for v${VERSION}; nothing to push."
+          else
+            git commit -m "alcatraz ${VERSION}"
+            # The tap may have moved since checkout (another tool releasing);
+            # rebase our formula commit on top instead of failing.
+            git pull --rebase origin main
+            git push origin main
+          fi

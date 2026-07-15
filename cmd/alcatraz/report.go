@@ -39,11 +39,17 @@ func (f Finding) location() string {
 //
 //	user.go:11  CREDIT_CARD  45************66  0.92
 //	alcatraz: 1 finding(s)
-func writeFindings(w io.Writer, findings []Finding) {
+//
+// Write errors are returned so a failed stdout (e.g. broken pipe) surfaces
+// as exit code 2, per the CLI contract.
+func writeFindings(w io.Writer, findings []Finding) error {
 	for _, f := range findings {
-		fmt.Fprintf(w, "%s  %s  %s  %.2f\n", f.location(), f.EntityType, mask(f.Value), f.Score)
+		if _, err := fmt.Fprintf(w, "%s  %s  %s  %.2f\n", f.location(), f.EntityType, mask(f.Value), f.Score); err != nil {
+			return err
+		}
 	}
-	fmt.Fprintf(w, "alcatraz: %d finding(s)\n", len(findings))
+	_, err := fmt.Fprintf(w, "alcatraz: %d finding(s)\n", len(findings))
+	return err
 }
 
 // jsonFinding is the machine-readable shape of one finding. Values are

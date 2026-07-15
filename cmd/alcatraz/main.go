@@ -87,7 +87,7 @@ func run(args []string) (int, error) {
 	if *jsonOut {
 		err = writeJSON(os.Stdout, findings)
 	} else {
-		writeFindings(os.Stdout, findings)
+		err = writeFindings(os.Stdout, findings)
 	}
 	if err != nil {
 		return 0, err

@@ -85,40 +85,53 @@ func (s *scanner) analyzeLine(file string, line int, content string, out []Findi
 	return out
 }
 
-// hunkRe extracts the new-file start line from a unified diff hunk header.
-var hunkRe = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+(\d+)`)
+// hunkRe extracts the new-file start line and line count from a unified
+// diff hunk header.
+var hunkRe = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))?`)
 
 // scanDiff parses a unified diff and analyzes only added lines, tracking the
-// file and line number each added line lands on in the new version.
+// file and line number each added line lands on in the new version. Hunks
+// are consumed by their declared new-side line count, so an added line whose
+// content begins with "++ " (rendered "+++ " in the diff) is never mistaken
+// for a file header — headers are only recognized between hunks.
 func (s *scanner) scanDiff(r io.Reader) ([]Finding, error) {
 	var findings []Finding
 	var file string
 	line := 0
-	inHunk := false
+	remaining := 0 // new-side lines left in the current hunk
 
 	sc := newLineScanner(r)
 	for sc.Scan() {
 		l := sc.Text()
+		inHunk := remaining > 0
 		switch {
-		case strings.HasPrefix(l, "+++ "):
+		case strings.HasPrefix(l, "diff --git "):
+			// A new file section always closes the previous hunk, even in
+			// a truncated or malformed diff.
+			remaining = 0
+		case !inHunk && strings.HasPrefix(l, "+++ "):
 			file = strings.TrimPrefix(strings.TrimPrefix(l, "+++ "), "b/")
 			if file == "/dev/null" || s.excluded(file) {
 				file = ""
 			}
-			inHunk = false
 		case file == "":
 			// Deleted or excluded file: skip until the next file header.
 		case hunkRe.MatchString(l):
 			m := hunkRe.FindStringSubmatch(l)
 			line, _ = strconv.Atoi(m[1])
-			inHunk = true
+			remaining = 1
+			if m[2] != "" {
+				remaining, _ = strconv.Atoi(m[2])
+			}
 		case !inHunk:
-			// Skip diff headers (diff --git, index, ---, mode lines).
+			// Skip diff headers (index, ---, mode lines).
 		case strings.HasPrefix(l, "+"):
 			findings = s.analyzeLine(file, line, l[1:], findings)
 			line++
+			remaining--
 		case strings.HasPrefix(l, " "):
 			line++
+			remaining--
 		}
 	}
 	return findings, sc.Err()

@@ -99,6 +99,57 @@ func TestScanDiffExclude(t *testing.T) {
 	}
 }
 
+func TestScanDiffPlusPlusContentLine(t *testing.T) {
+	// An added line whose content begins with "++ " is rendered "+++ " in
+	// the diff; it must scan as content, not be mistaken for a file header.
+	d := "diff --git a/notes.md b/notes.md\n" +
+		"--- a/notes.md\n" +
+		"+++ b/notes.md\n" +
+		"@@ -1 +1,3 @@\n" +
+		" intro\n" +
+		"+++ contact jane@example.com\n" +
+		"+card 4532015112830366\n"
+	findings, err := defaultTestScanner(nil).scanDiff(strings.NewReader(d))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 2 {
+		t.Fatalf("got %d findings, want 2: %+v", len(findings), findings)
+	}
+	if f := findings[0]; f.EntityType != "EMAIL_ADDRESS" || f.File != "notes.md" || f.Line != 2 {
+		t.Errorf("email finding = %+v, want EMAIL_ADDRESS at notes.md:2", f)
+	}
+	if f := findings[1]; f.EntityType != "CREDIT_CARD" || f.File != "notes.md" || f.Line != 3 {
+		t.Errorf("card finding = %+v, want CREDIT_CARD at notes.md:3", f)
+	}
+}
+
+func TestScanDiffPlainUnified(t *testing.T) {
+	// diff -u output has no "diff --git" separators; hunk line counts alone
+	// must delimit hunks so the second file's headers are recognized.
+	d := "--- a/a.txt\n" +
+		"+++ b/a.txt\n" +
+		"@@ -1 +1 @@\n" +
+		"+first jane@example.com\n" +
+		"--- a/b.txt\n" +
+		"+++ b/b.txt\n" +
+		"@@ -1 +1 @@\n" +
+		"+second 4532015112830366\n"
+	findings, err := defaultTestScanner(nil).scanDiff(strings.NewReader(d))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 2 {
+		t.Fatalf("got %d findings, want 2: %+v", len(findings), findings)
+	}
+	if f := findings[0]; f.File != "a.txt" || f.Line != 1 {
+		t.Errorf("first finding = %+v, want a.txt:1", f)
+	}
+	if f := findings[1]; f.File != "b.txt" || f.Line != 1 {
+		t.Errorf("second finding = %+v, want b.txt:1", f)
+	}
+}
+
 func TestScanText(t *testing.T) {
 	body := "here are my logs:\nuser=jane@example.com logged in\nall good"
 	findings, err := defaultTestScanner(nil).scanText(strings.NewReader(body))

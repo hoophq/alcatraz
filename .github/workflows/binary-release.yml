@@ -148,7 +148,12 @@ jobs:
           EOF
           cat dist/alcatraz.rb
 
+      - name: Tap publish skipped (no HOMEBREW_TAP_TOKEN)
+        if: ${{ secrets.HOMEBREW_TAP_TOKEN == '' }}
+        run: echo "::warning::HOMEBREW_TAP_TOKEN is not set — release assets are published, but Formula/alcatraz.rb was not pushed to hoophq/homebrew-tap."
+
       - name: Check out the tap
+        if: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
         uses: actions/checkout@v4
         with:
           # A cross-repo push needs a token with write access to the tap; the
@@ -159,6 +164,7 @@ jobs:
           path: tap
 
       - name: Update and push the formula
+        if: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
         env:
           VERSION: ${{ needs.resolve.outputs.version }}
         run: |

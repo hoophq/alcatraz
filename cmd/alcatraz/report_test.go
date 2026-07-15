@@ -22,9 +22,12 @@ func TestMask(t *testing.T) {
 
 func TestWriteFindingsMasksValues(t *testing.T) {
 	var b strings.Builder
-	writeFindings(&b, []Finding{
+	err := writeFindings(&b, []Finding{
 		{File: "user.go", Line: 11, EntityType: "CREDIT_CARD", Value: "4532015112830366", Score: 0.92},
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	out := b.String()
 	if strings.Contains(out, "4532015112830366") {
 		t.Errorf("raw value leaked into output:\n%s", out)

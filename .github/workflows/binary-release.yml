@@ -47,12 +47,25 @@ jobs:
         if: ${{ github.event_name == 'workflow_dispatch' }}
         env:
           RAW: ${{ inputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          # This job has write permissions: refuse to build/upload for a
+          # malformed version or a tag that has no release.
           VERSION="${RAW#v}"
-          echo "publish=true" >> "$GITHUB_OUTPUT"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "ref=v${VERSION}" >> "$GITHUB_OUTPUT"
+          if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::'${RAW}' is not a semver version (want X.Y.Z)"
+            exit 1
+          fi
+          if ! gh release view "v${VERSION}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "::error::release v${VERSION} does not exist in ${{ github.repository }} — create the release first, this workflow only attaches binaries"
+            exit 1
+          fi
+          {
+            echo "publish=true"
+            echo "version=${VERSION}"
+            echo "ref=v${VERSION}"
+          } >> "$GITHUB_OUTPUT"
           echo "Publishing v${VERSION} (manual dispatch)"
 
       - uses: actions/checkout@v4

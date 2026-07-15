@@ -6,10 +6,20 @@ name: Binary Release
 # for darwin/linux, uploads the archives and checksums to that release, and
 # publishes the Homebrew formula to hoophq/homebrew-tap (the shared tap), so
 # users can `brew install hoophq/tap/alcatraz`.
+#
+# The manual trigger re-publishes binaries for an existing tag — the recovery
+# path when a release was cut while this workflow was broken or the tap push
+# failed.
 on:
   workflow_run:
     workflows: ["Auto Release"]
     types: [completed]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Existing release tag to (re)publish binaries for, without the leading v (e.g. 0.5.0)"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -25,12 +35,28 @@ jobs:
     name: Resolve release tag
     runs-on: ubuntu-latest
     # Auto Release runs on every push to main; act only on successful runs.
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    # Manual dispatches name their tag explicitly and always proceed.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     outputs:
-      publish: ${{ steps.tag.outputs.publish }}
-      version: ${{ steps.tag.outputs.version }}
+      publish: ${{ steps.dispatch.outputs.publish || steps.tag.outputs.publish }}
+      version: ${{ steps.dispatch.outputs.version || steps.tag.outputs.version }}
+      ref: ${{ steps.dispatch.outputs.ref || steps.tag.outputs.ref }}
     steps:
+      - name: Use the dispatched tag
+        id: dispatch
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          RAW: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          VERSION="${RAW#v}"
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "ref=v${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Publishing v${VERSION} (manual dispatch)"
+
       - uses: actions/checkout@v4
+        if: ${{ github.event_name == 'workflow_run' }}
         with:
           # The exact commit Auto Release ran on. fetch-depth: 0 brings the
           # tags so we can read the version tag it created at that commit.
@@ -39,6 +65,7 @@ jobs:
 
       - name: Find the release tag at this commit
         id: tag
+        if: ${{ github.event_name == 'workflow_run' }}
         run: |
           set -euo pipefail
           # Auto Release tags the released commit vX.Y.Z, or tags nothing for
@@ -51,6 +78,7 @@ jobs:
           else
             echo "publish=true" >> "$GITHUB_OUTPUT"
             echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+            echo "ref=${{ github.event.workflow_run.head_sha }}" >> "$GITHUB_OUTPUT"
             echo "Publishing ${TAG}"
           fi
 
@@ -59,10 +87,14 @@ jobs:
     needs: resolve
     if: ${{ needs.resolve.outputs.publish == 'true' }}
     runs-on: ubuntu-latest
+    env:
+      # The secrets context is not allowed in step `if:` expressions, so the
+      # tap-publish gate is hoisted into job env here.
+      HAS_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ needs.resolve.outputs.ref }}
 
       - uses: actions/setup-go@v5
         with:
@@ -149,11 +181,11 @@ jobs:
           cat dist/alcatraz.rb
 
       - name: Tap publish skipped (no HOMEBREW_TAP_TOKEN)
-        if: ${{ secrets.HOMEBREW_TAP_TOKEN == '' }}
+        if: ${{ env.HAS_TAP_TOKEN != 'true' }}
         run: echo "::warning::HOMEBREW_TAP_TOKEN is not set — release assets are published, but Formula/alcatraz.rb was not pushed to hoophq/homebrew-tap."
 
       - name: Check out the tap
-        if: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
+        if: ${{ env.HAS_TAP_TOKEN == 'true' }}
         uses: actions/checkout@v4
         with:
           # A cross-repo push needs a token with write access to the tap; the
@@ -164,7 +196,7 @@ jobs:
           path: tap
 
       - name: Update and push the formula
-        if: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
+        if: ${{ env.HAS_TAP_TOKEN == 'true' }}
         env:
           VERSION: ${{ needs.resolve.outputs.version }}
         run: |

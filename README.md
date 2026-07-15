@@ -95,6 +95,13 @@ The CLI powers the [Hoop plugin for Claude Code](https://github.com/hoophq/claud
 `/hoop:pii-scan` command and pairs with
 [alcatraz-action](https://github.com/hoophq/alcatraz-action) for CI.
 
+The CLI also ships Claude Code **hook processors**: `alcatraz hook
+claude-post` masks PII in tool outputs before they enter model context
+(`-chain` composes an upstream rewriter like julius so two output rewriters
+never race), and `alcatraz hook claude-prompt` warns or blocks when the
+user's own prompt carries PII. The [Hoop plugin](https://github.com/hoophq/claude-marketplace)
+wires both up automatically.
+
 ## Quickstart
 
 ```go

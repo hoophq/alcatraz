@@ -26,6 +26,34 @@ func TestMaskStringReplacesAndCounts(t *testing.T) {
 	}
 }
 
+func TestMaskStringOverlappingDetections(t *testing.T) {
+	// The engine keeps overlaps across entity types. With URL detection
+	// enabled (not ignored), a URL containing an email produces overlapping
+	// spans — the union must be masked, with no raw fragment left exposed.
+	s := newScanner(0.4, nil, []string{"DATE_TIME"}, nil)
+	counts := map[string]int{}
+	got := maskString(s, "see https://example.com/jane@example.com for details", counts)
+	for _, raw := range []string{"jane@example.com", "example.com/jane", "https://example.com"} {
+		if strings.Contains(got, raw) {
+			t.Errorf("overlap left raw fragment %q exposed: %q", raw, got)
+		}
+	}
+}
+
+func TestRunHookNeverErrors(t *testing.T) {
+	// Setup mistakes must fail open (exit 0), never break the session.
+	for _, args := range [][]string{
+		{},
+		{"claude-nope"},
+		{"claude-post", "-definitely-not-a-flag"},
+	} {
+		code, err := runHook(args)
+		if code != 0 || err != nil {
+			t.Errorf("runHook(%v) = (%d, %v), want (0, nil)", args, code, err)
+		}
+	}
+}
+
 func TestMaskAnySkipsPathKeys(t *testing.T) {
 	counts := map[string]int{}
 	v := map[string]any{

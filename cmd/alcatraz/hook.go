@@ -33,6 +33,11 @@ import (
 // this).
 const chainTimeout = 10 * time.Second
 
+// maxHookBytes caps the hook payload read from stdin: a pathological
+// tool_response must degrade to "no opinion", not to memory pressure in a
+// session-critical process.
+const maxHookBytes = 10 << 20
+
 // pathKeys are JSON fields whose string values are filesystem paths the
 // agent navigates by (Grep filenames, Read file paths). Masking a path that
 // happens to contain PII would break every follow-up tool call on it, so
@@ -63,9 +68,14 @@ type hookOutput struct {
 	HookSpecificOutput *hookSpecificOutput `json:"hookSpecificOutput,omitempty"`
 }
 
+// runHook never returns a non-zero code or an error: a hook process exits 0
+// no matter what, because Claude Code treats non-zero hook exits as session
+// errors — a misconfigured masking hook must degrade to "no opinion", never
+// to a broken session. Setup mistakes are reported on stderr only.
 func runHook(args []string) (int, error) {
 	if len(args) == 0 {
-		return 0, fmt.Errorf("usage: alcatraz hook <claude-post|claude-prompt> [flags]")
+		fmt.Fprintln(os.Stderr, "alcatraz hook: usage: alcatraz hook <claude-post|claude-prompt> [flags]")
+		return 0, nil
 	}
 	event, rest := args[0], args[1:]
 
@@ -81,18 +91,24 @@ func runHook(args []string) (int, error) {
 	case "claude-prompt":
 		mode = fs.String("mode", "warn", "what to do on findings: warn or block")
 	default:
-		return 0, fmt.Errorf("unknown hook event %q (want claude-post or claude-prompt)", event)
+		fmt.Fprintf(os.Stderr, "alcatraz hook: unknown event %q (want claude-post or claude-prompt)\n", event)
+		return 0, nil
 	}
 	if err := fs.Parse(rest); err != nil {
-		return 0, err
+		// flag already printed the problem to stderr.
+		return 0, nil
 	}
 
 	s := newScanner(*threshold, splitList(*entities), splitList(*ignore), nil)
 
-	input, err := io.ReadAll(os.Stdin)
+	input, err := io.ReadAll(io.LimitReader(os.Stdin, maxHookBytes+1))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "alcatraz hook: reading stdin:", err)
 		return 0, nil // fail open
+	}
+	if len(input) > maxHookBytes {
+		fmt.Fprintf(os.Stderr, "alcatraz hook: payload exceeds %d bytes; passing through unmasked\n", maxHookBytes)
+		return 0, nil
 	}
 
 	switch event {
@@ -251,8 +267,10 @@ func maskAny(s *scanner, v any, key string, counts map[string]int) any {
 }
 
 // maskString replaces every surviving detection in text with its masked
-// form, working back-to-front so byte offsets stay valid. Overlapping
-// detections keep the first (rightmost-processed) replacement.
+// form, working back-to-front so byte offsets stay valid. The engine keeps
+// overlapping detections across entity types, so overlapping spans are
+// clamped to the still-unmasked region — the union of all enabled detections
+// gets covered, never partially exposed.
 func maskString(s *scanner, text string, counts map[string]int) string {
 	results := s.engine.Analyze(text, s.opts)
 	if len(results) == 0 {
@@ -261,10 +279,17 @@ func maskString(s *scanner, text string, counts map[string]int) string {
 	sort.Slice(results, func(i, j int) bool { return results[i].Start > results[j].Start })
 	limit := len(text)
 	for _, r := range results {
-		if s.ignored[r.EntityType] || r.End > limit || r.Start < 0 {
+		if s.ignored[r.EntityType] || r.Start < 0 {
 			continue
 		}
-		text = text[:r.Start] + mask(r.Text) + text[r.End:]
+		end := r.End
+		if end > limit {
+			end = limit
+		}
+		if r.Start >= end {
+			continue
+		}
+		text = text[:r.Start] + mask(text[r.Start:end]) + text[end:]
 		limit = r.Start
 		counts[r.EntityType]++
 	}

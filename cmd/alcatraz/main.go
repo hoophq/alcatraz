@@ -6,11 +6,14 @@
 //
 //	alcatraz scan [flags] [path ...]   scan files line by line (no paths: read stdin)
 //	alcatraz diff [flags]              read a unified diff on stdin, scan added lines
+//	alcatraz hook <claude-post|claude-prompt> [flags]
+//	                                   Claude Code hook processors (see hook.go)
 //	alcatraz version                   print the version
 //
-// Exit codes: 0 = no findings, 1 = findings detected, 2 = error. Detected
-// values are always masked in the output — the raw values never leave the
-// scan.
+// Exit codes: 0 = no findings, 1 = findings detected, 2 = error. Hook mode
+// always exits 0 — findings are handled via hook output, never exit codes.
+// Detected values are always masked in the output — the raw values never
+// leave the scan.
 package main
 
 import (
@@ -40,9 +43,11 @@ func run(args []string) (int, error) {
 	case "version", "-version", "--version":
 		fmt.Println(version)
 		return 0, nil
+	case "hook":
+		return runHook(rest)
 	case "scan", "diff":
 	default:
-		return 0, fmt.Errorf("unknown command %q (want scan, diff, or version)", cmd)
+		return 0, fmt.Errorf("unknown command %q (want scan, diff, hook, or version)", cmd)
 	}
 
 	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)

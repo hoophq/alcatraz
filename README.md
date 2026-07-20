@@ -542,4 +542,4 @@ which is what `pfilter.EnsureLibrary` downloads.
 
 ---
 
-Built by the team behind [hoop.dev](https://hoop.dev).
+Built by the team behind [hoop.dev](https://hoop.dev/start?utm_source=alcatraz&utm_medium=github&utm_campaign=att-launch-072026).

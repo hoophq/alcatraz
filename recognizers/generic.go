@@ -22,12 +22,18 @@ func Email() analyzer.Recognizer {
 }
 
 // Phone detects US, Brazilian and international (E.164-style) phone numbers.
+//
+// The US and BR patterns match one leading context character but report only
+// the captured group, so a parenthesized area code keeps balanced parens in
+// the reported span — downstream anonymization and allow-listing operate on
+// exact spans, and `11) 91234-5678` cut out of `(11) 91234-5678` would leave
+// a stray `(` behind.
 func Phone() analyzer.Recognizer {
 	return analyzer.NewPatternRecognizer(
 		"PhoneRecognizer", entities.PhoneNumber, "en",
 		[]*analyzer.Pattern{
 			analyzer.MustPattern("Phone (US)",
-				`\b(\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b`, 0.5),
+				`(?:^|\W)((?:\+?1[-.\s]?)?(?:\(\d{3}\)|\d{3})[-.\s]?\d{3}[-.\s]?\d{4})\b`, 0.5).WithGroup(1),
 			// A '+' country prefix followed by 8-15 digits (the E.164 range)
 			// with at most two separator characters between consecutive
 			// digits. The digit count is enforced by the repetition bounds,
@@ -37,9 +43,11 @@ func Phone() analyzer.Recognizer {
 			analyzer.MustPattern("Phone (intl)",
 				`\B\+(?:[\s.()-]{0,2}\d){8,15}\b`, 0.5),
 			// Brazilian domestic format: optional 55 country code, 2-digit
-			// area code (DDD), optional mobile '9', then 4+4 digits.
+			// area code (DDD), optional mobile '9', then 4+4 digits. Scored
+			// like the US pattern: with balanced parens its shape is no
+			// weaker, and 0.5 clears the `alcatraz hook` default threshold.
 			analyzer.MustPattern("Phone (BR)",
-				`\b(?:\+?55[\s.-]?)?\(?\d{2}\)?[\s.-]?9?\d{4}[\s.-]?\d{4}\b`, 0.4),
+				`(?:^|\W)((?:\+?55[\s.-]?)?(?:\(\d{2}\)|\d{2})[\s.-]?9?\d{4}[\s.-]?\d{4})\b`, 0.5).WithGroup(1),
 		},
 	).WithContext("phone", "number", "telephone", "cell", "mobile")
 }

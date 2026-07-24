@@ -20,11 +20,13 @@ func TestPhoneDetects(t *testing.T) {
 		want string
 	}{
 		{"us dashed", "call 415-555-2671 now", "415-555-2671"},
+		{"us parenthesized", "call (415) 555-2671 now", "(415) 555-2671"},
 		{"us with plus prefix", "call +1 (415) 555-2671 now", "+1 (415) 555-2671"},
 		{"br mobile e164", "contato +55 11 91234-5678 obrigado", "+55 11 91234-5678"},
 		{"br mobile e164 compact", "tel +5511912345678.", "+5511912345678"},
 		{"br mobile bare with ddd", "celular 11912345678 cadastrado", "11912345678"},
-		{"br mobile formatted", "ligue (11) 91234-5678 hoje", "11) 91234-5678"},
+		{"br mobile formatted", "ligue (11) 91234-5678 hoje", "(11) 91234-5678"},
+		{"br formatted at text start", "(11) 91234-5678 hoje", "(11) 91234-5678"},
 		{"uk e164 compact", "office +442071838750 line", "+442071838750"},
 		{"e164 spaced", "reach me at +49 30 901820 today", "+49 30 901820"},
 	}

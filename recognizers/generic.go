@@ -21,12 +21,26 @@ func Email() analyzer.Recognizer {
 	).WithContext("email", "mail")
 }
 
-// Phone detects US-style phone numbers.
+// Phone detects US, Brazilian and international (E.164-style) phone numbers.
 func Phone() analyzer.Recognizer {
 	return analyzer.NewPatternRecognizer(
 		"PhoneRecognizer", entities.PhoneNumber, "en",
-		[]*analyzer.Pattern{analyzer.MustPattern("Phone (US)",
-			`\b(\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b`, 0.5)},
+		[]*analyzer.Pattern{
+			analyzer.MustPattern("Phone (US)",
+				`\b(\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b`, 0.5),
+			// A '+' country prefix followed by 8-15 digits (the E.164 range)
+			// with at most two separator characters between consecutive
+			// digits. The digit count is enforced by the repetition bounds,
+			// so longer numeric runs (IDs, card numbers) never match a
+			// prefix. \B rejects a '+' preceded by a word character, keeping
+			// arithmetic like 2+34567890 out.
+			analyzer.MustPattern("Phone (intl)",
+				`\B\+(?:[\s.()-]{0,2}\d){8,15}\b`, 0.5),
+			// Brazilian domestic format: optional 55 country code, 2-digit
+			// area code (DDD), optional mobile '9', then 4+4 digits.
+			analyzer.MustPattern("Phone (BR)",
+				`\b(?:\+?55[\s.-]?)?\(?\d{2}\)?[\s.-]?9?\d{4}[\s.-]?\d{4}\b`, 0.4),
+		},
 	).WithContext("phone", "number", "telephone", "cell", "mobile")
 }
 

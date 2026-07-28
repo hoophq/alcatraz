@@ -95,9 +95,24 @@ func testModel(t *testing.T) (id string, files map[string][]byte, art modelArtif
 	return "alcatraz-test/fixture-NER", files, modelArtifact{
 		revision: "0000000000000000000000000000000000000000",
 		files: []modelFile{
-			{path: "tokenizer.json", sha256: sum(files["tokenizer.json"])},
-			{path: "model.onnx", sha256: sum(files["model.onnx"])},
+			{path: "tokenizer.json", sha256: sum(files["tokenizer.json"]), size: int64(len(files["tokenizer.json"]))},
+			{path: "model.onnx", sha256: sum(files["model.onnx"]), size: int64(len(files["model.onnx"]))},
 		},
+	}
+}
+
+// assertNoLeftovers checks that a rejected download for name left nothing
+// usable in dir: neither the file itself nor a .partial-* temp file.
+func assertNoLeftovers(t *testing.T, dir, name string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Name() == name || strings.Contains(e.Name(), ".partial-") {
+			t.Errorf("leftover file %q after a rejected download", e.Name())
+		}
 	}
 }
 
@@ -204,8 +219,9 @@ func TestEnsureModelInRepairsTamperedCache(t *testing.T) {
 
 func TestEnsureModelInRejectsChecksumMismatch(t *testing.T) {
 	id, files, art := testModel(t)
-	// The hub serves something other than what we pinned.
-	files["model.onnx"] = []byte("swapped out from under the pin")
+	// The hub serves something other than what we pinned, at exactly the
+	// pinned length: the digest has to be what rejects it, not the size.
+	files["model.onnx"] = []byte(strings.Repeat("z", len(files["model.onnx"])))
 	hub := newFakeHub(t, files)
 	pinTestModel(t, hub, id, art)
 
@@ -217,17 +233,49 @@ func TestEnsureModelInRejectsChecksumMismatch(t *testing.T) {
 	if !strings.Contains(err.Error(), "sha256 mismatch") {
 		t.Errorf("error = %v, want it to name the sha256 mismatch", err)
 	}
-	// A rejected download leaves nothing usable behind — not the bad file,
-	// not a .partial-* temp file.
-	entries, err := os.ReadDir(modelDir(dir, id))
-	if err != nil {
-		t.Fatal(err)
+	assertNoLeftovers(t, modelDir(dir, id), "model.onnx")
+}
+
+// TestEnsureModelInRejectsOversizedResponse covers the case the digest alone
+// cannot: a response that never ends. The read is bounded one byte past the
+// pin, so an endpoint streaming far more than the pinned length is cut off
+// and rejected rather than filling the disk while the hash waits for EOF.
+func TestEnsureModelInRejectsOversizedResponse(t *testing.T) {
+	id, files, art := testModel(t)
+	pinned := len(files["model.onnx"])
+	files["model.onnx"] = []byte(strings.Repeat("x", 100*pinned))
+	hub := newFakeHub(t, files)
+	pinTestModel(t, hub, id, art)
+
+	dir := t.TempDir()
+	_, err := EnsureModelIn(context.Background(), id, dir)
+	if err == nil {
+		t.Fatal("EnsureModelIn succeeded, want a size mismatch error")
 	}
-	for _, e := range entries {
-		if e.Name() == "model.onnx" || strings.Contains(e.Name(), ".partial-") {
-			t.Errorf("leftover file %q after a rejected download", e.Name())
-		}
+	if !strings.Contains(err.Error(), "size mismatch") {
+		t.Errorf("error = %v, want it to name the size mismatch", err)
 	}
+	assertNoLeftovers(t, modelDir(dir, id), "model.onnx")
+}
+
+// TestEnsureModelInRejectsTruncatedResponse checks that a short read fails as
+// a truncation rather than as an opaque digest mismatch, so the error says
+// what actually went wrong.
+func TestEnsureModelInRejectsTruncatedResponse(t *testing.T) {
+	id, files, art := testModel(t)
+	files["model.onnx"] = files["model.onnx"][:5]
+	hub := newFakeHub(t, files)
+	pinTestModel(t, hub, id, art)
+
+	dir := t.TempDir()
+	_, err := EnsureModelIn(context.Background(), id, dir)
+	if err == nil {
+		t.Fatal("EnsureModelIn succeeded, want a size mismatch error")
+	}
+	if !strings.Contains(err.Error(), "size mismatch") {
+		t.Errorf("error = %v, want it to name the size mismatch", err)
+	}
+	assertNoLeftovers(t, modelDir(dir, id), "model.onnx")
 }
 
 func TestEnsureModelInMissingFileLeavesNoPartial(t *testing.T) {
@@ -244,15 +292,7 @@ func TestEnsureModelInMissingFileLeavesNoPartial(t *testing.T) {
 	if !strings.Contains(err.Error(), "model.onnx") {
 		t.Errorf("error = %v, want it to name the file that failed", err)
 	}
-	entries, err := os.ReadDir(modelDir(dir, id))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, e := range entries {
-		if strings.Contains(e.Name(), ".partial-") {
-			t.Errorf("leftover temp file %q after a failed download", e.Name())
-		}
-	}
+	assertNoLeftovers(t, modelDir(dir, id), "model.onnx")
 }
 
 func TestEnsureModelUnpinnedModel(t *testing.T) {
@@ -322,6 +362,55 @@ func TestEnsureModelInConcurrent(t *testing.T) {
 	}
 }
 
+// TestEnsureModelInConcurrentRepair points several callers at the same
+// corrupt cache file at once. Each one has to end up with the pinned bytes
+// readable at the pathname it was handed: repair replaces the file by
+// renaming over it, so a caller that finished later must never remove what an
+// earlier one already installed and reported as ready.
+//
+// Interleavings are not deterministic, so this exercises the path rather than
+// proving it; -race and -count make it worth its runtime.
+func TestEnsureModelInConcurrentRepair(t *testing.T) {
+	id, files, art := testModel(t)
+	hub := newFakeHub(t, files)
+	pinTestModel(t, hub, id, art)
+
+	dir := t.TempDir()
+	if _, err := EnsureModelIn(context.Background(), id, dir); err != nil {
+		t.Fatalf("seeding the cache: %v", err)
+	}
+	tampered := filepath.Join(modelDir(dir, id), "model.onnx")
+	if err := os.WriteFile(tampered, []byte("malicious"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	errs := make([]error, 8)
+	got := make([][]byte, len(errs))
+	for i := range errs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := EnsureModelIn(context.Background(), id, dir); err != nil {
+				errs[i] = err
+				return
+			}
+			// Read through the pathname the caller was told is ready.
+			got[i], errs[i] = os.ReadFile(tampered)
+		}()
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("goroutine %d: %v", i, err)
+			continue
+		}
+		if string(got[i]) != string(files["model.onnx"]) {
+			t.Errorf("goroutine %d read %q, want the pinned content", i, got[i])
+		}
+	}
+}
+
 func TestModelDir(t *testing.T) {
 	cases := []struct{ model, want string }{
 		{"KnightsAnalytics/distilbert-NER", "KnightsAnalytics_distilbert-NER"},
@@ -351,6 +440,11 @@ func TestPinnedArtifactsWellFormed(t *testing.T) {
 		for _, f := range art.files {
 			if !digest.MatchString(f.sha256) {
 				t.Errorf("%s: %s has a malformed sha256 %q", id, f.path, f.sha256)
+			}
+			// A zero size would cap every read at one byte, so a missing
+			// size has to fail here rather than at download time.
+			if f.size <= 0 {
+				t.Errorf("%s: %s has a non-positive size %d", id, f.path, f.size)
 			}
 			if seen[f.path] {
 				t.Errorf("%s: %s is pinned twice", id, f.path)

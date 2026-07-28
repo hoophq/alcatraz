@@ -25,6 +25,13 @@ type modelFile struct {
 	// hugot lays a downloaded model out.
 	path   string
 	sha256 string
+	// size is the exact byte length. The digest is only conclusive once the
+	// response ends, so on its own it bounds integrity but not consumption:
+	// nothing stops an endpoint that streams until the disk is full. Capping
+	// the read one byte past the pin does, and rejecting a short read too
+	// turns a truncated response into an error that says so rather than an
+	// opaque digest mismatch.
+	size int64
 }
 
 // modelArtifact pins a model repository to an immutable revision and to the
@@ -42,20 +49,22 @@ type modelArtifact struct {
 }
 
 // modelArtifacts holds every model EnsureModel can verify. Adding a model
-// means recording its commit sha and hashing each file at that revision:
+// means recording its commit sha, then the digest and byte length of each
+// file at that revision:
 //
 //	rev=$(curl -sS https://huggingface.co/api/models/$REPO | jq -r .sha)
-//	curl -sSL https://huggingface.co/$REPO/resolve/$rev/$FILE | shasum -a 256
+//	curl -sSLo /tmp/f https://huggingface.co/$REPO/resolve/$rev/$FILE
+//	shasum -a 256 /tmp/f && wc -c < /tmp/f
 var modelArtifacts = map[string]modelArtifact{
 	"KnightsAnalytics/distilbert-NER": {
 		revision: "13a742d5ea02349d17e18f3755301282c9ee33f7",
 		files: []modelFile{
-			{path: "config.json", sha256: "8f9f01d47f61087197f9fa85185d4a7a6248333c15af1b221aa5e8b9b76462b5"},
-			{path: "model.onnx", sha256: "4440f9fc64cd28ac75d83a38d89716f25947799640cd0e5f1f9f6e57b9c14160"},
-			{path: "special_tokens_map.json", sha256: "5d5b662e421ea9fac075174bb0688ee0d9431699900b90662acd44b2a350503a"},
-			{path: "tokenizer.json", sha256: "cb26b43c98e8266ae3e99c2a583cf8315d73b33a17e6b20b4df7ff1f22392d34"},
-			{path: "tokenizer_config.json", sha256: "4391b0abb71cd639e50a333c5c642d3c8659ba34099cb12a83dba2efc26f5451"},
-			{path: "vocab.txt", sha256: "eeaa9875b23b04b4c54ef759d03db9d1ba1554838f8fb26c5d96fa551df93d02"},
+			{path: "config.json", sha256: "8f9f01d47f61087197f9fa85185d4a7a6248333c15af1b221aa5e8b9b76462b5", size: 925},
+			{path: "model.onnx", sha256: "4440f9fc64cd28ac75d83a38d89716f25947799640cd0e5f1f9f6e57b9c14160", size: 260926482},
+			{path: "special_tokens_map.json", sha256: "5d5b662e421ea9fac075174bb0688ee0d9431699900b90662acd44b2a350503a", size: 695},
+			{path: "tokenizer.json", sha256: "cb26b43c98e8266ae3e99c2a583cf8315d73b33a17e6b20b4df7ff1f22392d34", size: 669021},
+			{path: "tokenizer_config.json", sha256: "4391b0abb71cd639e50a333c5c642d3c8659ba34099cb12a83dba2efc26f5451", size: 1305},
+			{path: "vocab.txt", sha256: "eeaa9875b23b04b4c54ef759d03db9d1ba1554838f8fb26c5d96fa551df93d02", size: 213450},
 		},
 	},
 }
@@ -77,11 +86,11 @@ func PinnedModels() []string {
 // network-free and the returned path can be handed straight to
 // Config.ModelPath.
 //
-// Every file is pinned to a sha256 and re-verified on each call, cache hits
-// included: a file that exists is not evidence that it is the file we asked
-// for. A mismatched file is deleted and fetched again. Re-hashing the whole
-// model costs roughly half a second for the 260MB default against a warm
-// page cache — small enough beside session setup that New verifies too,
+// Every file is pinned to a sha256 and a byte length, re-verified on each
+// call, cache hits included: a file that exists is not evidence that it is
+// the file we asked for. A mismatched file is fetched again. Re-hashing the
+// whole model costs roughly half a second for the 260MB default against a
+// warm page cache — small enough beside session setup that New verifies too,
 // rather than trusting the cache once it is populated.
 //
 // It is idempotent, and safe to call concurrently and from several
@@ -120,7 +129,7 @@ func EnsureModelIn(ctx context.Context, model, dir string) (string, error) {
 			continue
 		}
 		url := fmt.Sprintf("%s/%s/resolve/%s/%s", hubBaseURL, model, art.revision, f.path)
-		if err := download(ctx, url, dest, f.sha256, 0o644); err != nil {
+		if err := download(ctx, url, dest, f.sha256, f.size, 0o644); err != nil {
 			return "", fmt.Errorf("ner: downloading %s for model %s: %w", f.path, model, err)
 		}
 	}
@@ -155,8 +164,14 @@ func modelDir(modelsDir, model string) string {
 }
 
 // cachedFileValid reports whether path exists and still matches the pinned
-// sha256. A mismatched file is deleted so the caller's download replaces it
-// and no other code path can pick the bad copy up in the meantime.
+// sha256.
+//
+// A mismatched file is left where it is rather than unlinked: download
+// replaces it by renaming over it, which is atomic, and unlinking here is
+// not. Two callers that find the same corrupt file both hold handles to it,
+// and the slower one would unlink the pathname after the faster one had
+// already installed a verified replacement under it — deleting a good file
+// that its caller had been told was ready.
 func cachedFileValid(path, wantSHA256 string) bool {
 	f, err := os.Open(path)
 	if err != nil {
@@ -168,17 +183,14 @@ func cachedFileValid(path, wantSHA256 string) bool {
 	if _, err := io.Copy(hasher, f); err != nil {
 		return false
 	}
-	if hex.EncodeToString(hasher.Sum(nil)) == wantSHA256 {
-		return true
-	}
-	os.Remove(path)
-	return false
+	return hex.EncodeToString(hasher.Sum(nil)) == wantSHA256
 }
 
 // download fetches url into dest atomically: it streams to a temp file in
-// the destination directory, verifies the sha256, sets mode, and renames.
-// A failed or corrupt download never leaves a file at dest.
-func download(ctx context.Context, url, dest, wantSHA256 string, mode os.FileMode) error {
+// the destination directory, verifies the byte length and the sha256, sets
+// mode, and renames. A failed, corrupt, truncated or oversized download never
+// leaves a file at dest.
+func download(ctx context.Context, url, dest, wantSHA256 string, wantSize int64, mode os.FileMode) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
@@ -202,8 +214,16 @@ func download(ctx context.Context, url, dest, wantSHA256 string, mode os.FileMod
 	}()
 
 	hasher := sha256.New()
-	if _, err := io.Copy(io.MultiWriter(tmp, hasher), resp.Body); err != nil {
+	// Bounded one byte past the pin, so an endpoint that never stops
+	// sending is cut off rather than filling the disk before the digest
+	// gets a chance to reject anything. The bound is on bytes actually
+	// read, not on Content-Length, which the endpoint also controls.
+	n, err := io.Copy(io.MultiWriter(tmp, hasher), io.LimitReader(resp.Body, wantSize+1))
+	if err != nil {
 		return err
+	}
+	if n != wantSize {
+		return fmt.Errorf("size mismatch for %s: got %d bytes, want %d", url, n, wantSize)
 	}
 	if got := hex.EncodeToString(hasher.Sum(nil)); got != wantSHA256 {
 		return fmt.Errorf("sha256 mismatch for %s: got %s, want %s", url, got, wantSHA256)

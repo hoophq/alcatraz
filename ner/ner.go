@@ -41,6 +41,26 @@
 // whole pipeline — windowing, batching, span merging — behaves identically
 // on every backend.
 //
+// # Getting the model
+//
+// New downloads the model on first use, which is convenient on a laptop and
+// unhelpful in a build pipeline or a network-restricted deployment.
+// EnsureModel fetches it up front instead, into the same directory New reads
+// from, so New finds a warm cache and touches the network not at all:
+//
+//	// In an image build or an init container.
+//	dir, err := ner.EnsureModelIn(ctx, "KnightsAnalytics/distilbert-NER", "/opt/alcatraz/models")
+//
+//	// At runtime, pointed at what was built above.
+//	cfg := ner.DefaultConfig()
+//	cfg.ModelsDir = "/opt/alcatraz/models"
+//
+// Every file of a model listed by PinnedModels is fetched from a pinned
+// commit and checked against a pinned sha256 — on download and again on
+// every load, since a cached file that exists is not evidence that it is the
+// file we pinned. Models outside that list still work, but nothing verifies
+// what the hub serves for them.
+//
 // The Engine implements analyzer.NlpEngine, so an analyzer.Engine configured
 // with SetNlpEngine runs the model once per Analyze call and shares the
 // artifacts with every artifact-aware recognizer:
@@ -63,7 +83,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 
 	"github.com/gomlx/go-huggingface/tokenizers/api"
 	"github.com/hoophq/alcatraz/analyzer"
@@ -200,17 +219,20 @@ func New(ctx context.Context, cfg Config) (*Engine, error) {
 // ensureModel returns the local path of cfg.Model, downloading it from
 // Hugging Face into the models directory on first use.
 func ensureModel(ctx context.Context, cfg Config) (string, error) {
-	dir := cfg.ModelsDir
-	if dir == "" {
-		cache, err := os.UserCacheDir()
-		if err != nil {
-			return "", err
-		}
-		dir = filepath.Join(cache, "alcatraz", "models")
+	dir, err := resolveModelsDir(cfg.ModelsDir)
+	if err != nil {
+		return "", err
 	}
-	// DownloadModel stores the model under this derived path; when it is
-	// already populated, skip the network entirely.
-	modelPath := filepath.Join(dir, strings.ReplaceAll(cfg.Model, "/", "_"))
+	// Pinned models take the verified path: every file is checked against
+	// its sha256, so a cache hit is a hit only if the bytes still match
+	// and what New loads is what we pinned, not merely what the hub last
+	// served (see download.go).
+	if _, pinned := modelArtifacts[cfg.Model]; pinned {
+		return EnsureModelIn(ctx, cfg.Model, dir)
+	}
+	// Any other model id keeps working, unverified: hugot's cache check is
+	// presence-only, and so is ours.
+	modelPath := modelDir(dir, cfg.Model)
 	if _, err := os.Stat(filepath.Join(modelPath, "tokenizer.json")); err == nil {
 		return modelPath, nil
 	}

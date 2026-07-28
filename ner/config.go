@@ -34,6 +34,11 @@ type Config struct {
 	// Model is a Hugging Face model id of an ONNX token-classification
 	// export, e.g. "KnightsAnalytics/distilbert-NER". It is downloaded into
 	// ModelsDir on first use. Ignored when ModelPath is set.
+	//
+	// Models listed by PinnedModels are fetched from a pinned commit and
+	// verified against pinned sha256s on every load; any other id is
+	// downloaded through hugot with no integrity check at all. Use
+	// EnsureModel to populate ModelsDir ahead of time.
 	Model string
 	// ModelPath is a local directory holding the model files (model.onnx,
 	// tokenizer.json, config.json). When set, no download happens.

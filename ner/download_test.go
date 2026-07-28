@@ -362,6 +362,25 @@ func TestEnsureModelInConcurrent(t *testing.T) {
 	}
 }
 
+// TestCachedFileValidLeavesMismatchInPlace pins the decision that makes
+// repair safe under concurrency: validation reports, it does not clean up.
+// Unlinking here is not atomic against the rename that replaces the file, so
+// a slow validator could remove a pathname after a faster caller had already
+// installed a verified copy under it. The mismatched file stays until
+// download renames over it.
+func TestCachedFileValidLeavesMismatchInPlace(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "model.onnx")
+	if err := os.WriteFile(p, []byte("tampered"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if cachedFileValid(p, sum([]byte("pinned"))) {
+		t.Fatal("cachedFileValid accepted a file that does not match the pin")
+	}
+	if _, err := os.Stat(p); err != nil {
+		t.Errorf("mismatched file was removed: %v", err)
+	}
+}
+
 // TestEnsureModelInConcurrentRepair points several callers at the same
 // corrupt cache file at once. Each one has to end up with the pinned bytes
 // readable at the pathname it was handed: repair replaces the file by

@@ -125,28 +125,36 @@ jobs:
           gh release create "$NEXT" "${ARGS[@]}"
           echo "Released github.com/${{ github.repository }}@${NEXT}"
 
-      - name: Release lookaround submodule
+      - name: Release submodules
         if: steps.pr.outputs.skip == 'false'
         env:
           NEXT: ${{ steps.version.outputs.next }}
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          # The lookaround module uses a local `replace` for development, which
-          # is ignored by consumers and would leave `require ...alcatraz v0.0.0`
+          # Each submodule uses a local `replace` for development, which is
+          # ignored by consumers and would leave `require ...alcatraz v0.0.0`
           # unresolvable. Publish a corrected go.mod on a throwaway commit that
           # is referenced ONLY by the tag: strip the replace and pin the parent
           # to the version we just released. The commit is never pushed to a
           # branch, so main stays untouched and this workflow is not retriggered
           # (it only runs on branch pushes, not tag pushes).
-          git checkout --detach "$SHA"
-          go mod edit -dropreplace=github.com/hoophq/alcatraz lookaround/go.mod
-          go mod edit -require=github.com/hoophq/alcatraz@"$NEXT" lookaround/go.mod
-          git add lookaround/go.mod
-          git \
-            -c user.name='github-actions[bot]' \
-            -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
-            commit -m "release(lookaround): require alcatraz ${NEXT}"
-          git tag "lookaround/${NEXT}"
-          git push origin "lookaround/${NEXT}"
-          echo "Released github.com/${{ github.repository }}/lookaround@${NEXT} (requires alcatraz ${NEXT})"
+          #
+          # bench is deliberately absent: it is an internal benchmark harness
+          # with no consumers, so tagging it would publish an API we do not
+          # intend to support.
+          for mod in lookaround ner pfilter; do
+            # Re-detach each round so every tag is built from the merge commit
+            # alone. The previous iteration's commit survives via its pushed tag.
+            git checkout --detach "$SHA"
+            go mod edit -dropreplace=github.com/hoophq/alcatraz "${mod}/go.mod"
+            go mod edit -require=github.com/hoophq/alcatraz@"$NEXT" "${mod}/go.mod"
+            git add "${mod}/go.mod"
+            git \
+              -c user.name='github-actions[bot]' \
+              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              commit -m "release(${mod}): require alcatraz ${NEXT}"
+            git tag "${mod}/${NEXT}"
+            git push origin "${mod}/${NEXT}"
+            echo "Released github.com/${{ github.repository }}/${mod}@${NEXT} (requires alcatraz ${NEXT})"
+          done

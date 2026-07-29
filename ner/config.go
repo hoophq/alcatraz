@@ -4,6 +4,7 @@ import (
 	"sort"
 
 	"github.com/hoophq/alcatraz/entities"
+	"github.com/hoophq/alcatraz/models"
 	"github.com/knights-analytics/hugot/options"
 )
 
@@ -133,7 +134,7 @@ type Config struct {
 // under a canonical name).
 func DefaultConfig() Config {
 	return Config{
-		Model: "KnightsAnalytics/distilbert-NER",
+		Model: models.DefaultModel,
 		LabelMapping: map[string]string{
 			// CoNLL-style labels.
 			"PER": entities.Person,

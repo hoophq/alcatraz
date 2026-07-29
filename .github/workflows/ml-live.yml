@@ -57,11 +57,16 @@ jobs:
             ~/Library/Caches/alcatraz/models
           key: ner-model-${{ runner.os }}-v1
 
+      # TestLiveNER runs against the cache restored above, so it exercises
+      # loading but never downloading. TestLiveEnsureModel writes to a temp
+      # dir instead, which makes it the only job here that fetches the pinned
+      # URLs and checks the recorded sizes and digests against what the hub
+      # actually serves — the case a warm cache hides.
       - name: Live model test
         working-directory: ner
         env:
           ALCATRAZ_NER_LIVE: "1"
-        run: go test -v -run TestLiveNER -timeout 25m ./...
+        run: go test -v -run 'TestLiveNER|TestLiveEnsureModel' -timeout 25m ./...
 
   # pfilter: needs libpf (built from the pinned privacy-filter.cpp revision
   # via the pfilter/dist CMake wrapper, cached) and a GGUF (cached).

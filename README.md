@@ -68,8 +68,8 @@ Requires Go 1.24+. The standard library is the only dependency.
 ## The CLI
 
 The library also ships as a small command-line scanner — same engine, same
-zero-network posture. Scan files, stdin, or a unified diff; detected values
-are always masked in the output.
+zero-network scan. Scan files, stdin, or a unified diff; detected values are
+always masked in the output.
 
 ```bash
 # Homebrew (macOS & Linux)
@@ -90,6 +90,11 @@ Exit codes are grep-style: `0` clean, `1` findings, `2` error. Flags:
 `-threshold` (default 0.4), `-entities`, `-ignore` (default `DATE_TIME,URL`),
 `-allowlist-file` (one allowed value per line, `#` comments), and `-exclude`
 (diff mode, glob patterns of paths to skip).
+
+Scanning never touches the network — no telemetry, no lookups, nothing leaves
+the process. The single exception is `alcatraz models download`, which fetches
+the optional NER model from pinned, checksum-verified URLs when you ask it to;
+see [Running NER without internet access](#running-ner-without-internet-access).
 
 The CLI powers the [Hoop plugin for Claude Code](https://github.com/hoophq/claude-marketplace)'s
 `/hoop:pii-scan` command and pairs with
@@ -274,6 +279,104 @@ Design notes:
 - **Byte offsets, guaranteed.** Model spans are mapped back to byte offsets
   in the original text, so `text[r.Start:r.End] == r.Text` holds for NER
   results too, including multi-byte input.
+
+### Running NER without internet access
+
+By default `ner.New` downloads the model on first use — ~250 MiB from
+huggingface.co, at the worst possible moment: the first request that needs a
+`PERSON`. In a restricted or air-gapped network that is not a slow start, it
+is a hard failure. Fetch the model deliberately instead, as a build or deploy
+step:
+
+```bash
+alcatraz models download                      # warm the cache ner.New reads from
+alcatraz models download --dest /opt/alcatraz/models   # or a self-contained directory
+```
+
+```
+KnightsAnalytics/distilbert-NER @ 13a742d5
+fetching 6 files, 249.7 MiB total (cached files are verified, not re-fetched):
+  config.json                   925 B
+  model.onnx                248.8 MiB
+  ...
+verified:
+  config.json              8f9f01d47f61087197f9fa85185d4a7a6248333c15af1b221aa5e8b9b76462b5
+  model.onnx               4440f9fc64cd28ac75d83a38d89716f25947799640cd0e5f1f9f6e57b9c14160
+  ...
+
+ModelsDir: /opt/alcatraz/models
+ModelPath: /opt/alcatraz/models/KnightsAnalytics_distilbert-NER
+```
+
+Every file is pinned to a commit revision and checked against a known sha256
+and byte size; a mismatch fails the command with a non-zero exit and installs
+nothing. Re-running is cheap and offline — files already present are
+re-verified, not re-fetched. Note that the command lives in the **root**
+module, so the plain `alcatraz` binary (Homebrew, `go install`, or a release
+download) can fetch the model without the ONNX runtime being anywhere near it.
+
+**Bake it into an image** — no runtime network at all, at the cost of ~250 MiB
+of image:
+
+```dockerfile
+# Fetch and verify the model in a build stage.
+FROM golang:1.24 AS models
+RUN go install github.com/hoophq/alcatraz/cmd/alcatraz@latest
+RUN alcatraz models download --dest /opt/alcatraz/models
+
+FROM your-app-base
+COPY --from=models /opt/alcatraz/models /opt/alcatraz/models
+```
+
+**Or prime a shared volume** — an init container fetches once, the app
+container mounts the result:
+
+```yaml
+spec:
+  volumes:
+    - name: alcatraz-models
+      # emptyDir re-fetches per pod; a ReadWriteMany PVC fetches once for the
+      # cluster and every later start is a local re-verify.
+      persistentVolumeClaim:
+        claimName: alcatraz-models
+  initContainers:
+    - name: fetch-ner-model
+      image: your-registry/alcatraz:latest # any image carrying the alcatraz binary
+      args: ["models", "download", "--dest", "/models"]
+      volumeMounts:
+        - { name: alcatraz-models, mountPath: /models }
+  containers:
+    - name: app
+      volumeMounts:
+        - { name: alcatraz-models, mountPath: /models }
+```
+
+**Wiring the result into the config.** The command prints two paths one
+directory apart, and they are not interchangeable — picking the wrong one is
+the usual way this gets misconfigured:
+
+| Printed path | Config field | Downloads on load | Verifies on load |
+|--------------|--------------|-------------------|------------------|
+| `ModelsDir:` — the parent holding every model | `ner.Config.ModelsDir` | only files missing or failing verification | yes, every pinned file |
+| `ModelPath:` — this model's own directory | `ner.Config.ModelPath` | never | no — the directory is trusted as-is |
+
+`ModelsDir` is the better default for a mounted volume: it needs no network
+when the files are intact, and it still catches a truncated or tampered-with
+model instead of loading it. `ModelPath` is the escape hatch for a directory
+alcatraz did not produce.
+
+```go
+cfg := ner.DefaultConfig()
+cfg.ModelsDir = "/opt/alcatraz/models" // the ModelsDir: line, not ModelPath:
+nlp, err := ner.New(ctx, cfg)
+```
+
+From Go, the same fetch is [`ner.EnsureModelIn`](https://pkg.go.dev/github.com/hoophq/alcatraz/ner#EnsureModelIn)
+(or `ner.EnsureModel` for the default cache), which returns the `ModelPath`
+form. Neither `ner` nor `models` reads environment variables — the path is
+always a config field — so a host application decides how to surface it as a
+deployment knob. Hoop's agent, for instance, maps `ALCATRAZ_NER_MODEL_PATH`
+onto `Config.ModelPath`.
 
 ### Faster inference: ORT, XLA and GPU
 
@@ -511,6 +614,9 @@ analyzer/          Framework: Result, dedup, Recognizer, Pattern, Matcher,
                    NLP seam (NlpEngine, NlpArtifacts, ArtifactRecognizer).
 anonymizer/        Mask/replace/redact detected spans (Operator, Config).
 recognizers/       The 45 built-in recognizers, checksum helpers, loader.
+models/            Pinned model manifests and checksum-verified downloads for
+                   the optional NER backends. In the root module, stdlib only,
+                   so the CLI fetches models without the model runtime.
 lookaround/        Optional, separate module: regexp2-backed Matcher for
                    lookahead/lookbehind in user-configured patterns.
 ner/               Optional, separate module: statistical NER (PERSON,
@@ -524,7 +630,8 @@ bench/             Separate module: reproducible speed + parity benchmarks
 ## Tests
 
 ```bash
-go test ./...                    # core
+go test ./...                    # core (incl. the models pin table, no network)
+ALCATRAZ_NER_LIVE=1 go test -run TestLiveEnsureModel ./models/   # + real download
 cd lookaround && go test ./...   # lookaround module
 cd ner && go test ./...          # ner module (unit tests, no model needed)
 cd ner && ALCATRAZ_NER_LIVE=1 go test ./...   # + end-to-end (downloads model)

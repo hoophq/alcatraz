@@ -143,9 +143,19 @@ jobs:
           # bench is deliberately absent: it is an internal benchmark harness
           # with no consumers, so tagging it would publish an API we do not
           # intend to support.
+          #
+          # Build every tag locally first, then publish them in one atomic
+          # push. Tagging three modules instead of one means three chances to
+          # fail mid-way, and a half-tagged release cannot be repaired by a
+          # rerun: the next run reads the release we just created and computes
+          # a *higher* version, so the missing tags would stay missing at this
+          # one. --atomic makes the remote accept all the tags or none, which
+          # keeps that from happening.
+          tags=()
           for mod in lookaround ner pfilter; do
             # Re-detach each round so every tag is built from the merge commit
-            # alone. The previous iteration's commit survives via its pushed tag.
+            # alone. The previous round's commit is kept alive by its local tag
+            # until the push below.
             git checkout --detach "$SHA"
             go mod edit -dropreplace=github.com/hoophq/alcatraz "${mod}/go.mod"
             go mod edit -require=github.com/hoophq/alcatraz@"$NEXT" "${mod}/go.mod"
@@ -155,6 +165,9 @@ jobs:
               -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
               commit -m "release(${mod}): require alcatraz ${NEXT}"
             git tag "${mod}/${NEXT}"
-            git push origin "${mod}/${NEXT}"
+            tags+=("${mod}/${NEXT}")
+          done
+          git push --atomic origin "${tags[@]}"
+          for mod in lookaround ner pfilter; do
             echo "Released github.com/${{ github.repository }}/${mod}@${NEXT} (requires alcatraz ${NEXT})"
           done

@@ -5,9 +5,6 @@ module github.com/hoophq/alcatraz/pfilter
 
 go 1.24
 
-require github.com/hoophq/alcatraz v0.0.0
+require github.com/hoophq/alcatraz v0.10.0
 
 require github.com/ebitengine/purego v0.9.1
-
-// Local development: resolve the parent module from the repo, not the proxy.
-replace github.com/hoophq/alcatraz => ../

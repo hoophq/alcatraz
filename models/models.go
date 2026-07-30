@@ -8,13 +8,15 @@
 // nor its newer Go requirement — into a module that is otherwise standard
 // library only. Nothing here imports anything outside the standard library.
 //
-// The ner package re-exports EnsureModel, EnsureModelIn and PinnedModels, so
-// NER users still have a single import.
+// The ner package re-exports EnsureModel, EnsureModelIn, VerifyModelIn,
+// DefaultDir and PinnedModels, so NER users still have a single import.
 package models
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -195,13 +197,13 @@ func EnsureModelIn(ctx context.Context, model, dir string) (string, error) {
 // not to touch the network (ner.Config.Offline) or that mounts its models
 // read-only.
 //
-// Where EnsureModelIn answers a missing or mismatched file by fetching it,
-// this reports it, and says which file and which of the two it was. That
-// distinction is the whole diagnostic: absent means the directory was never
-// seeded, mismatched means it was seeded with the wrong bytes — a stale image
-// layer, a truncated copy, a tampered volume — and the two have nothing to do
-// with each other. Both otherwise surface much later as an opaque failure
-// inside the model runtime.
+// Where EnsureModelIn answers a bad file by fetching it, this reports it, and
+// says which file and which kind of bad. That distinction is the whole
+// diagnostic: absent means the directory was never seeded, mismatched means it
+// was seeded with the wrong bytes — a stale image layer, a truncated copy, a
+// tampered volume — unreadable means the bytes may be fine and the process
+// cannot see them, and the three have nothing to do with each other. All
+// otherwise surface much later as an opaque failure inside the model runtime.
 //
 // dir is the models directory, not the model directory, exactly as in
 // EnsureModelIn. An empty dir means the default, which unlike EnsureModelIn
@@ -221,7 +223,10 @@ func VerifyModelIn(model, dir string) (string, error) {
 	modelPath := Dir(dir, model)
 	fi, err := os.Stat(modelPath)
 	if err != nil {
-		return "", fmt.Errorf("models: no model directory at %s", modelPath)
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", fmt.Errorf("models: no model directory at %s", modelPath)
+		}
+		return "", fmt.Errorf("models: cannot read %s: %w", modelPath, err)
 	}
 	if !fi.IsDir() {
 		return "", fmt.Errorf("models: %s is not a directory", modelPath)
@@ -231,10 +236,17 @@ func VerifyModelIn(model, dir string) (string, error) {
 		// slash-separated, whatever the host OS uses.
 		name := path.Base(f.path)
 		dest := filepath.Join(modelPath, name)
-		if _, err := os.Stat(dest); err != nil {
+		// Three outcomes, not two. A file the process cannot open is a
+		// third one: reporting it as a digest mismatch would send an
+		// operator to re-provision a model whose only problem is its mode,
+		// and that is a likely mistake precisely here, where the model
+		// arrives from a build stage or a volume that owns it.
+		switch ok, err := fileMatches(dest, f.sha256); {
+		case errors.Is(err, fs.ErrNotExist):
 			return "", fmt.Errorf("models: %s is missing from %s", name, modelPath)
-		}
-		if !cachedFileValid(dest, f.sha256) {
+		case err != nil:
+			return "", fmt.Errorf("models: cannot read %s in %s: %w", name, modelPath, err)
+		case !ok:
 			return "", fmt.Errorf("models: %s in %s does not match its pinned sha256", name, modelPath)
 		}
 	}

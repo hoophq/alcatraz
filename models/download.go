@@ -15,8 +15,29 @@ import (
 // from. It is a var so tests can point it at a local server.
 var hubBaseURL = "https://huggingface.co"
 
+// fileMatches reports whether path's contents hash to wantSHA256, keeping an
+// I/O failure separate from a false result. A file that cannot be read is not
+// a file with the wrong bytes, and in the deployments VerifyModelIn serves —
+// non-root containers, volumes mounted from elsewhere — the difference
+// between the two is the difference between fixing a mode and re-provisioning
+// the model.
+func fileMatches(path, wantSHA256 string) (bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, f); err != nil {
+		return false, err
+	}
+	return hex.EncodeToString(hasher.Sum(nil)) == wantSHA256, nil
+}
+
 // cachedFileValid reports whether path exists and still matches the pinned
-// sha256.
+// sha256. It folds every failure into false because the download path answers
+// all of them the same way: fetch the file again.
 //
 // A mismatched file is left where it is rather than unlinked: download
 // replaces it by renaming over it, which is atomic, and unlinking here is
@@ -25,17 +46,8 @@ var hubBaseURL = "https://huggingface.co"
 // already installed a verified replacement under it — deleting a good file
 // that its caller had been told was ready.
 func cachedFileValid(path, wantSHA256 string) bool {
-	f, err := os.Open(path)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-
-	hasher := sha256.New()
-	if _, err := io.Copy(hasher, f); err != nil {
-		return false
-	}
-	return hex.EncodeToString(hasher.Sum(nil)) == wantSHA256
+	ok, err := fileMatches(path, wantSHA256)
+	return err == nil && ok
 }
 
 // download fetches url into dest atomically: it streams to a temp file in

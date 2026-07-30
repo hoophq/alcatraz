@@ -1,6 +1,8 @@
 package models
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -104,6 +106,54 @@ func TestVerifyModelInReportsMismatchNotMissing(t *testing.T) {
 	}
 	if n := hub.totalHits(); n != 0 {
 		t.Errorf("hub hits = %d, want 0: a mismatch must not trigger a re-fetch", n)
+	}
+}
+
+// The third outcome. A file the process cannot open is not a file with the
+// wrong bytes: one is fixed with a chmod, the other by re-provisioning the
+// model, and the deployments this function exists for — non-root containers,
+// volumes owned by whatever wrote them — are where the mode is the likelier
+// of the two. Reporting a permission error as a checksum mismatch sends the
+// operator to redo the expensive thing.
+func TestVerifyModelInReportsUnreadableNotMismatch(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix permission bits")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("running as root, which ignores the permission bits under test")
+	}
+	id, files, art := testModel(t)
+	hub := newFakeHub(t, files)
+	pinTestModel(t, hub, id, art)
+
+	dir := t.TempDir()
+	modelPath := seedModel(t, dir, id, files)
+	locked := filepath.Join(modelPath, "model.onnx")
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(locked, 0o644) })
+
+	_, err := VerifyModelIn(id, dir)
+	if err == nil {
+		t.Fatal("VerifyModelIn succeeded on an unreadable file")
+	}
+	if !strings.Contains(err.Error(), "model.onnx") || !strings.Contains(err.Error(), "cannot read") {
+		t.Errorf("err = %v, want it to report model.onnx as unreadable", err)
+	}
+	// Matched on the message forms, not the bare words: the temp directory in
+	// the path carries the test's own name.
+	for _, wrong := range []string{"is missing from", "does not match its pinned sha256"} {
+		if strings.Contains(err.Error(), wrong) {
+			t.Errorf("err = %v, misreports a permission problem as %q", err, wrong)
+		}
+	}
+	// Wrapped, not flattened into a string, so a caller can branch on it.
+	if !errors.Is(err, fs.ErrPermission) {
+		t.Errorf("err = %v, want it to wrap fs.ErrPermission", err)
+	}
+	if n := hub.totalHits(); n != 0 {
+		t.Errorf("hub hits = %d, want 0: an unreadable file must not trigger a fetch", n)
 	}
 }
 

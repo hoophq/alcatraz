@@ -376,6 +376,46 @@ cfg.ModelsDir = "/opt/alcatraz/models" // the ModelsDir: line, not ModelPath:
 nlp, err := ner.New(ctx, cfg)
 ```
 
+**Make it a guarantee, not an expectation.** Everything above arranges for the
+cache to be warm; `ner.Config.Offline` makes `ner.New` fail rather than fall
+back if it isn't:
+
+```go
+cfg := ner.DefaultConfig()
+cfg.ModelsDir = "/opt/alcatraz/models"
+cfg.Offline = true // New opens no socket; a bad model directory is an error
+```
+
+Falling back to a download is not a graceful degradation in a locked-down
+deployment. The attempt trips egress monitoring even when it fails, and what
+comes back is a DNS or TLS timeout that says nothing about the model. With
+`Offline` set you get the actual problem instead:
+
+```
+ner: obtaining model KnightsAnalytics/distilbert-NER: offline: models: model.onnx
+in /opt/alcatraz/models/KnightsAnalytics_distilbert-NER does not match its pinned
+sha256; pre-download it with: alcatraz models download --dest "/opt/alcatraz/models"
+```
+
+Missing, mismatched and unreadable are reported as three different failures on
+purpose: absent means the volume was never seeded, mismatched means it was
+seeded with the wrong bytes — a stale image layer, a truncated copy —
+unreadable means the bytes may be fine and the container's user cannot open
+them, and the fixes have nothing in common.
+
+Because an offline caller has no fallback, `Offline` also tightens what counts
+as loadable, and it is the one thing that makes `ModelPath` checked at all:
+
+| | `Offline` unset | `Offline` set |
+|---|---|---|
+| `ModelsDir`, pinned model | downloads what is missing or fails verification | verifies every pinned sha256, never downloads |
+| `ModelsDir`, unpinned model | downloads through hugot | requires `config.json`, `tokenizer.json` and an `.onnx` file |
+| `ModelPath` | trusted as-is | same three-file check before hugot sees it |
+
+Nothing on the offline path writes — not the directory lookup, not the
+verification — so a model mounted read-only (`readOnly: true` on the volume
+mount above, or a `COPY`'d image layer) loads unchanged.
+
 From Go, the same fetch is [`ner.EnsureModelIn`](https://pkg.go.dev/github.com/hoophq/alcatraz/ner#EnsureModelIn)
 (or `ner.EnsureModel` for the default cache), which returns the `ModelPath`
 form. Neither `ner` nor `models` reads environment variables — the path is

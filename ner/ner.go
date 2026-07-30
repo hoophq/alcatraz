@@ -69,6 +69,20 @@
 // It prints both directories the config wants: ModelsDir, and the ModelPath
 // beneath it. See the alcatraz/models package for the pin table itself.
 //
+// Config.Offline turns "should be cached by now" into a guarantee. New then
+// opens no socket at all: a missing or mismatched model is an error naming
+// the file and the fix, rather than a download that trips egress monitoring
+// on its way to a DNS error that says nothing about the model.
+//
+//	cfg := ner.DefaultConfig()
+//	cfg.ModelsDir = "/opt/alcatraz/models"
+//	cfg.Offline = true
+//
+// Because an offline caller has no fallback, it also gets the directory
+// checked before hugot sees it — pinned models against their sha256s, any
+// model directory for config.json, tokenizer.json and an .onnx file. Nothing
+// on that path writes, so a model mounted read-only loads unchanged.
+//
 // The Engine implements analyzer.NlpEngine, so an analyzer.Engine configured
 // with SetNlpEngine runs the model once per Analyze call and shares the
 // artifacts with every artifact-aware recognizer:
@@ -173,6 +187,14 @@ func New(ctx context.Context, cfg Config) (*Engine, error) {
 		if err != nil {
 			return nil, fmt.Errorf("ner: obtaining model %s: %w", cfg.Model, err)
 		}
+	} else if cfg.Offline {
+		// An explicit ModelPath already downloads nothing, so Offline adds
+		// only the check — which is the half that matters here, because this
+		// is the baked-image and mounted-volume case and a directory seeded
+		// wrong should say so before hugot does.
+		if err := checkModelDir(modelPath, cfg.OnnxFilename); err != nil {
+			return nil, fmt.Errorf("ner: offline: %w", err)
+		}
 	}
 
 	// hugot's session keeps the ctx it was created with and uses it for
@@ -226,8 +248,12 @@ func New(ctx context.Context, cfg Config) (*Engine, error) {
 }
 
 // ensureModel returns the local path of cfg.Model, downloading it from
-// Hugging Face into the models directory on first use.
+// Hugging Face into the models directory on first use — unless cfg.Offline
+// forbids that, in which case it only reports what is already there.
 func ensureModel(ctx context.Context, cfg Config) (string, error) {
+	if cfg.Offline {
+		return offlineModel(cfg)
+	}
 	dir, err := models.ResolveDir(cfg.ModelsDir)
 	if err != nil {
 		return "", err

@@ -188,6 +188,59 @@ func EnsureModelIn(ctx context.Context, model, dir string) (string, error) {
 	return modelPath, nil
 }
 
+// VerifyModelIn is EnsureModelIn's verification half without its downloading
+// half: it reports that model is already present in dir and that every pinned
+// file still matches, and returns the model directory. It opens no socket and
+// writes nothing, so it is the resolution step for a caller that has promised
+// not to touch the network (ner.Config.Offline) or that mounts its models
+// read-only.
+//
+// Where EnsureModelIn answers a missing or mismatched file by fetching it,
+// this reports it, and says which file and which of the two it was. That
+// distinction is the whole diagnostic: absent means the directory was never
+// seeded, mismatched means it was seeded with the wrong bytes — a stale image
+// layer, a truncated copy, a tampered volume — and the two have nothing to do
+// with each other. Both otherwise surface much later as an opaque failure
+// inside the model runtime.
+//
+// dir is the models directory, not the model directory, exactly as in
+// EnsureModelIn. An empty dir means the default, which unlike EnsureModelIn
+// is not created: looking is not a reason to write.
+func VerifyModelIn(model, dir string) (string, error) {
+	art, ok := modelArtifacts[model]
+	if !ok {
+		return "", fmt.Errorf("models: model %q has no pinned checksums, so it cannot be verified (pinned models: %s)",
+			model, strings.Join(PinnedModels(), ", "))
+	}
+	if dir == "" {
+		var err error
+		if dir, err = DefaultDir(); err != nil {
+			return "", err
+		}
+	}
+	modelPath := Dir(dir, model)
+	fi, err := os.Stat(modelPath)
+	if err != nil {
+		return "", fmt.Errorf("models: no model directory at %s", modelPath)
+	}
+	if !fi.IsDir() {
+		return "", fmt.Errorf("models: %s is not a directory", modelPath)
+	}
+	for _, f := range art.files {
+		// path.Base, not filepath.Base: repository paths are always
+		// slash-separated, whatever the host OS uses.
+		name := path.Base(f.path)
+		dest := filepath.Join(modelPath, name)
+		if _, err := os.Stat(dest); err != nil {
+			return "", fmt.Errorf("models: %s is missing from %s", name, modelPath)
+		}
+		if !cachedFileValid(dest, f.sha256) {
+			return "", fmt.Errorf("models: %s in %s does not match its pinned sha256", name, modelPath)
+		}
+	}
+	return modelPath, nil
+}
+
 // ResolveDir returns dir, or (creating it) the default models directory when
 // dir is empty: "alcatraz/models" under the user cache dir. This is the
 // directory ner.Config.ModelsDir names — the parent of what EnsureModelIn
@@ -196,15 +249,26 @@ func ResolveDir(dir string) (string, error) {
 	if dir != "" {
 		return dir, nil
 	}
-	cache, err := os.UserCacheDir()
+	dir, err := DefaultDir()
 	if err != nil {
-		return "", fmt.Errorf("models: locating the user cache directory: %w", err)
+		return "", err
 	}
-	dir = filepath.Join(cache, "alcatraz", "models")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("models: creating the models directory: %w", err)
 	}
 	return dir, nil
+}
+
+// DefaultDir returns the default models directory — "alcatraz/models" under
+// the user cache dir — without creating it. ResolveDir is the same lookup for
+// a caller that is about to write there; this one is for a caller that only
+// wants to look, or to name the directory in a message.
+func DefaultDir() (string, error) {
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		return "", fmt.Errorf("models: locating the user cache directory: %w", err)
+	}
+	return filepath.Join(cache, "alcatraz", "models"), nil
 }
 
 // Dir returns the directory a model occupies inside a models directory. It

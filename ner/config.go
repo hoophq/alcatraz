@@ -50,6 +50,23 @@ type Config struct {
 	// OnnxFilename selects the .onnx file when the model repository holds
 	// more than one. Empty means the single .onnx file in the repository.
 	OnnxFilename string
+	// Offline forbids New from performing any network I/O. The model must
+	// already be on disk; a missing or mismatched one is an error naming the
+	// file and the fix, not a download.
+	//
+	// Falling back to a download is not a graceful degradation in a
+	// locked-down deployment. The attempt trips egress monitoring even when
+	// it fails, and what the caller gets back is a DNS or TLS error that says
+	// nothing about the model. This turns "should be cached by now" into a
+	// guarantee that holds whatever the cache turns out to contain.
+	//
+	// It also tightens what counts as loadable, since a caller that cannot
+	// fall back deserves to hear about a bad directory before the runtime
+	// does: pinned models are re-checked against their sha256s, and any model
+	// directory — including one named by ModelPath, which is otherwise passed
+	// through untouched — must hold config.json, tokenizer.json and an .onnx
+	// file. Seed one with EnsureModelIn or "alcatraz models download".
+	Offline bool
 
 	// Backend selects the hugot inference backend (see the package
 	// documentation for the build matrix):

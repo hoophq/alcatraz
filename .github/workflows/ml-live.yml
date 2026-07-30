@@ -71,13 +71,18 @@ jobs:
           ALCATRAZ_NER_LIVE: "1"
         run: go test -v -run TestLiveEnsureModel -timeout 25m ./models/
 
-      # TestLiveNER runs against the cache restored above, so it exercises
-      # loading but never downloading.
+      # Both run against the cache restored above, so they exercise loading
+      # but never downloading. TestLiveOfflineNER additionally mounts that
+      # cache read-only and fails on any outbound request, which is the only
+      # place the Config.Offline guarantee is checked against a real model
+      # and a real hugot session rather than a fixture. It is named
+      # separately here because -run is a substring match and
+      # "TestLiveOfflineNER" does not contain "TestLiveNER".
       - name: Live model test
         working-directory: ner
         env:
           ALCATRAZ_NER_LIVE: "1"
-        run: go test -v -run TestLiveNER -timeout 25m ./...
+        run: go test -v -run 'TestLiveNER|TestLiveOfflineNER' -timeout 25m ./...
 
   # pfilter: needs libpf (built from the pinned privacy-filter.cpp revision
   # via the pfilter/dist CMake wrapper, cached) and a GGUF (cached).

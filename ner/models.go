@@ -32,6 +32,24 @@ func EnsureModelIn(ctx context.Context, model, dir string) (string, error) {
 	return models.EnsureModelIn(ctx, model, dir)
 }
 
+// VerifyModelIn checks an already-seeded model directory against the pinned
+// digests without fetching anything, and returns it. It is what Config.Offline
+// runs, exported here for a caller that wants to fail at startup — or in a
+// container health check — rather than at first load. It is
+// [models.VerifyModelIn].
+//
+// dir is the models directory, as in EnsureModelIn. An empty dir means the
+// default, which unlike EnsureModelIn is not created.
+func VerifyModelIn(model, dir string) (string, error) {
+	return models.VerifyModelIn(model, dir)
+}
+
+// DefaultDir returns the models directory New reads from when Config.ModelsDir
+// is empty, without creating it. It is [models.DefaultDir].
+func DefaultDir() (string, error) {
+	return models.DefaultDir()
+}
+
 // PinnedModels returns, sorted, the model ids EnsureModel can fetch and
 // verify. Other model ids still work through Config.Model, but nothing
 // checks what the hub serves for them. It is [models.PinnedModels].

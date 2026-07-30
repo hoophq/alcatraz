@@ -394,13 +394,14 @@ comes back is a DNS or TLS timeout that says nothing about the model. With
 ```
 ner: obtaining model KnightsAnalytics/distilbert-NER: offline: models: model.onnx
 in /opt/alcatraz/models/KnightsAnalytics_distilbert-NER does not match its pinned
-sha256; pre-download it with "alcatraz models download --dest /opt/alcatraz/models"
+sha256; pre-download it with: alcatraz models download --dest "/opt/alcatraz/models"
 ```
 
-Missing and mismatched are reported as different failures on purpose: absent
-means the volume was never seeded, mismatched means it was seeded with the
-wrong bytes — a stale image layer, a truncated copy — and the fixes have
-nothing in common.
+Missing, mismatched and unreadable are reported as three different failures on
+purpose: absent means the volume was never seeded, mismatched means it was
+seeded with the wrong bytes — a stale image layer, a truncated copy —
+unreadable means the bytes may be fine and the container's user cannot open
+them, and the fixes have nothing in common.
 
 Because an offline caller has no fallback, `Offline` also tightens what counts
 as loadable, and it is the one thing that makes `ModelPath` checked at all:

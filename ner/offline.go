@@ -1,6 +1,7 @@
 package ner
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -33,7 +34,7 @@ func offlineModel(cfg Config) (string, error) {
 	if models.IsPinned(cfg.Model) {
 		modelPath, err := models.VerifyModelIn(cfg.Model, dir)
 		if err != nil {
-			return "", fmt.Errorf("offline: %w; pre-download it with %q", err, downloadCmd(cfg))
+			return "", fmt.Errorf("offline: %w; pre-download it with: %s", err, downloadCmd(cfg))
 		}
 		return modelPath, nil
 	}
@@ -52,13 +53,18 @@ func offlineModel(cfg Config) (string, error) {
 // downloadCmd is the CLI invocation that seeds the directory this Config
 // reads from. An empty ModelsDir is the default cache, which is exactly what
 // a bare invocation warms, so the advice is copy-pasteable either way.
+//
+// The values are quoted because they are the caller's, not ours. A models
+// directory under "Application Support" or "Program Files" would otherwise
+// produce a command that still runs and writes somewhere else entirely, which
+// is a worse failure than one that does not run at all.
 func downloadCmd(cfg Config) string {
 	cmd := "alcatraz models download"
 	if cfg.ModelsDir != "" {
-		cmd += " --dest " + cfg.ModelsDir
+		cmd += fmt.Sprintf(" --dest %q", cfg.ModelsDir)
 	}
 	if cfg.Model != models.DefaultModel {
-		cmd += " --model " + cfg.Model
+		cmd += fmt.Sprintf(" --model %q", cfg.Model)
 	}
 	return cmd
 }
@@ -68,52 +74,85 @@ func downloadCmd(cfg Config) string {
 // are all required, and the runtime's own complaint about a missing one names
 // neither the file nor the directory.
 //
-// It only rejects what certainly cannot load. A pre-flight check that guessed
-// too much would refuse a directory that works, which is worse than the
-// opaque error it set out to replace.
+// It rejects only what hugot would also reject, with one deliberate
+// exception: a Config.OnnxFilename naming a file that is not there. hugot
+// ignores OnnxFilename entirely when the directory holds exactly one .onnx
+// file, so a stale name there loads whatever is present — a full-precision
+// export where a quantized one was asked for — and says nothing. Offline is
+// the mode for being sure which model is loading, so that is an error here.
 func checkModelDir(modelPath, onnxFilename string) error {
 	fi, err := os.Stat(modelPath)
 	if err != nil {
-		return fmt.Errorf("no model directory at %s", modelPath)
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("no model directory at %s", modelPath)
+		}
+		return fmt.Errorf("cannot read %s: %w", modelPath, err)
 	}
 	if !fi.IsDir() {
 		return fmt.Errorf("%s is not a directory", modelPath)
 	}
 	for _, name := range []string{"config.json", "tokenizer.json"} {
-		if _, err := os.Stat(filepath.Join(modelPath, name)); err != nil {
+		switch err := readable(filepath.Join(modelPath, name)); {
+		case errors.Is(err, fs.ErrNotExist):
 			return fmt.Errorf("%s is missing from %s", name, modelPath)
+		case err != nil:
+			return fmt.Errorf("cannot read %s in %s: %w", name, modelPath, err)
 		}
 	}
-	if onnxFilename != "" {
-		if _, err := os.Stat(filepath.Join(modelPath, onnxFilename)); err != nil {
+	onnx := findONNX(modelPath, onnxFilename)
+	if onnx == "" {
+		if onnxFilename != "" {
 			return fmt.Errorf("%s is missing from %s", onnxFilename, modelPath)
 		}
-		return nil
-	}
-	if !hasONNX(modelPath) {
 		return fmt.Errorf("no .onnx file in %s", modelPath)
+	}
+	if err := readable(onnx); err != nil {
+		return fmt.Errorf("cannot read %s: %w", onnx, err)
 	}
 	return nil
 }
 
-// hasONNX reports whether dir holds an .onnx file anywhere beneath it. It
-// walks rather than testing for "model.onnx" because an empty
-// Config.OnnxFilename means "the single .onnx file in the repository",
-// whatever it is called and wherever the export put it.
-func hasONNX(dir string) bool {
-	found := false
+// readable reports whether the process can actually open path. os.Stat cannot
+// answer that — a file with mode 0 stats perfectly and opens never — and a
+// model directory that arrives from a build stage or a mounted volume is
+// exactly where the two come apart. hugot's complaint about an unreadable
+// file is as opaque as its complaint about an absent one, so the pre-flight
+// has to tell them apart itself.
+func readable(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	return f.Close()
+}
+
+// findONNX returns the path of the .onnx file dir holds anywhere beneath it,
+// named want when want is not empty, or "" if there is none.
+//
+// Both halves mirror hugot's own resolution (backends.getOnnxFiles): it walks
+// the model directory recursively, tests the ".onnx" suffix case-sensitively,
+// and compares Config.OnnxFilename against the base name wherever the file
+// sits. So weights under onnx/ count, a named file under onnx/ counts, and
+// MODEL.ONNX does not. Matching more loosely than hugot would wave through a
+// directory that then fails inside the runtime with the opaque error this
+// check exists to replace.
+func findONNX(dir, want string) string {
+	found := ""
 	// The error from WalkDir itself is discarded: this answers one question,
-	// and an unreadable subtree is not evidence either way. The callers above
-	// have already established that dir exists and is a directory.
-	_ = filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+	// and an unreadable subtree is not evidence either way. The caller above
+	// has already established that dir exists and is a directory.
+	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
-		if !d.IsDir() && strings.EqualFold(filepath.Ext(d.Name()), ".onnx") {
-			found = true
-			return fs.SkipAll
+		if d.IsDir() || !strings.HasSuffix(d.Name(), ".onnx") {
+			return nil
 		}
-		return nil
+		if want != "" && d.Name() != want {
+			return nil
+		}
+		found = p
+		return fs.SkipAll
 	})
 	return found
 }

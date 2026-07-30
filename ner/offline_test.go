@@ -51,6 +51,18 @@ func seedFiles(t *testing.T, dir string, files map[string]string) string {
 	return dir
 }
 
+// requireUnprivilegedUnix skips a test that means nothing without enforced
+// unix permission bits: Windows does not have them, and root ignores them.
+func requireUnprivilegedUnix(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("unix permission bits")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("running as root, which ignores the permission bits under test")
+	}
+}
+
 // unpinnedModel is a model id nothing has checksums for, which is the other
 // half of the offline path: presence checks only, and different advice.
 const unpinnedModel = "alcatraz-test/unpinned-NER"
@@ -68,7 +80,7 @@ func TestOfflineColdCacheDoesNotDownload(t *testing.T) {
 		"offline:",
 		"no model directory at",
 		models.Dir(dir, models.DefaultModel),
-		"alcatraz models download --dest " + dir,
+		`alcatraz models download --dest "` + dir + `"`,
 	} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("err = %v\nwant it to contain %q", err, want)
@@ -254,6 +266,74 @@ func TestCheckModelDir(t *testing.T) {
 		}
 	})
 
+	// "not there" and "there, and you may not look at it" have different
+	// fixes, and stat reports the second as the first for a file while
+	// reporting it honestly for a directory. Both are checked because both
+	// happen when the model is mounted in rather than downloaded.
+	t.Run("unreadable directory is not reported as absent", func(t *testing.T) {
+		requireUnprivilegedUnix(t)
+		parent := t.TempDir()
+		modelPath := filepath.Join(parent, "model")
+		if err := os.Mkdir(modelPath, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(parent, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chmod(parent, 0o755) })
+
+		err := checkModelDir(modelPath, "")
+		if err == nil || !strings.Contains(err.Error(), "cannot read") {
+			t.Errorf("err = %v, want it to report the directory as unreadable", err)
+		}
+		if err != nil && strings.Contains(err.Error(), "no model directory at") {
+			t.Errorf("err = %v, reports an unreadable directory as absent", err)
+		}
+	})
+
+	t.Run("unreadable file is not reported as missing", func(t *testing.T) {
+		requireUnprivilegedUnix(t)
+		dir := seedFiles(t, t.TempDir(), map[string]string{
+			"config.json":    "{}",
+			"tokenizer.json": "{}",
+			"model.onnx":     "weights",
+		})
+		locked := filepath.Join(dir, "tokenizer.json")
+		if err := os.Chmod(locked, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chmod(locked, 0o644) })
+
+		err := checkModelDir(dir, "")
+		if err == nil || !strings.Contains(err.Error(), "cannot read tokenizer.json") {
+			t.Errorf("err = %v, want it to report tokenizer.json as unreadable", err)
+		}
+		if err != nil && strings.Contains(err.Error(), "is missing from") {
+			t.Errorf("err = %v, reports a permission problem as an absent file", err)
+		}
+	})
+
+	// The weights are found by walking, which needs only the directory bit,
+	// so an unreadable .onnx passes a name-only check and fails inside hugot.
+	t.Run("unreadable onnx is caught", func(t *testing.T) {
+		requireUnprivilegedUnix(t)
+		dir := seedFiles(t, t.TempDir(), map[string]string{
+			"config.json":    "{}",
+			"tokenizer.json": "{}",
+		})
+		seedFiles(t, filepath.Join(dir, "onnx"), map[string]string{"model.onnx": "weights"})
+		locked := filepath.Join(dir, "onnx", "model.onnx")
+		if err := os.Chmod(locked, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chmod(locked, 0o644) })
+
+		err := checkModelDir(dir, "")
+		if err == nil || !strings.Contains(err.Error(), "cannot read "+locked) {
+			t.Errorf("err = %v, want it to report the weights as unreadable", err)
+		}
+	})
+
 	// hugot's own layouts put the weights in an onnx/ subdirectory often
 	// enough that a top-level-only check would reject a directory that loads.
 	t.Run("onnx in a subdirectory counts", func(t *testing.T) {
@@ -268,14 +348,45 @@ func TestCheckModelDir(t *testing.T) {
 		}
 	})
 
-	t.Run("extension match is case-insensitive", func(t *testing.T) {
+	// A named file is matched by base name wherever it sits, because that is
+	// how hugot matches it. Requiring it at the top level would reject the
+	// onnx/ layout above the moment OnnxFilename was set.
+	t.Run("named onnx in a subdirectory counts", func(t *testing.T) {
+		dir := seedFiles(t, t.TempDir(), map[string]string{
+			"config.json":    "{}",
+			"tokenizer.json": "{}",
+		})
+		seedFiles(t, filepath.Join(dir, "onnx"), map[string]string{"model_quantized.onnx": "weights"})
+
+		if err := checkModelDir(dir, "model_quantized.onnx"); err != nil {
+			t.Errorf("checkModelDir: %v", err)
+		}
+	})
+
+	t.Run("a different onnx does not satisfy OnnxFilename", func(t *testing.T) {
+		dir := seedFiles(t, t.TempDir(), map[string]string{
+			"config.json":    "{}",
+			"tokenizer.json": "{}",
+			"model.onnx":     "weights",
+		})
+		err := checkModelDir(dir, "model_quantized.onnx")
+		if err == nil || !strings.Contains(err.Error(), "model_quantized.onnx") {
+			t.Errorf("err = %v, want it to name the requested onnx file", err)
+		}
+	})
+
+	// hugot's suffix test is case-sensitive, so MODEL.ONNX is not weights as
+	// far as the runtime is concerned. Accepting it here would pass the
+	// pre-flight and then fail inside hugot, which is the whole failure mode
+	// checkModelDir exists to prevent.
+	t.Run("extension match is case-sensitive, as hugot's is", func(t *testing.T) {
 		dir := seedFiles(t, t.TempDir(), map[string]string{
 			"config.json":    "{}",
 			"tokenizer.json": "{}",
 			"MODEL.ONNX":     "weights",
 		})
-		if err := checkModelDir(dir, ""); err != nil {
-			t.Errorf("checkModelDir: %v", err)
+		if err := checkModelDir(dir, ""); err == nil || !strings.Contains(err.Error(), "no .onnx file in") {
+			t.Errorf("err = %v, want MODEL.ONNX rejected the way hugot rejects it", err)
 		}
 	})
 }
@@ -287,9 +398,12 @@ func TestDownloadCmd(t *testing.T) {
 		want string
 	}{
 		{"defaults", Config{Model: models.DefaultModel}, "alcatraz models download"},
-		{"explicit dir", Config{Model: models.DefaultModel, ModelsDir: "/opt/m"}, "alcatraz models download --dest /opt/m"},
-		{"other model", Config{Model: "org/other"}, "alcatraz models download --model org/other"},
-		{"both", Config{Model: "org/other", ModelsDir: "/opt/m"}, "alcatraz models download --dest /opt/m --model org/other"},
+		{"explicit dir", Config{Model: models.DefaultModel, ModelsDir: "/opt/m"}, `alcatraz models download --dest "/opt/m"`},
+		{"other model", Config{Model: "org/other"}, `alcatraz models download --model "org/other"`},
+		{"both", Config{Model: "org/other", ModelsDir: "/opt/m"}, `alcatraz models download --dest "/opt/m" --model "org/other"`},
+		// The reason the values are quoted at all: unquoted, this is a
+		// command that runs and seeds "/opt/my".
+		{"dir with a space", Config{Model: models.DefaultModel, ModelsDir: "/opt/my models"}, `alcatraz models download --dest "/opt/my models"`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -303,12 +417,7 @@ func TestDownloadCmd(t *testing.T) {
 // The offline path never writes, so a model directory mounted read-only —
 // the baked-image and shared-volume case — resolves unchanged.
 func TestOfflineReadOnlyModelsDir(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("unix permission bits")
-	}
-	if os.Geteuid() == 0 {
-		t.Skip("running as root, which ignores the permission bits under test")
-	}
+	requireUnprivilegedUnix(t)
 	noNetwork(t)
 
 	dir := t.TempDir()

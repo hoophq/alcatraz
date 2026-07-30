@@ -61,6 +61,14 @@
 // file we pinned. Models outside that list still work, but nothing verifies
 // what the hub serves for them.
 //
+// The same fetch is available without writing Go, for a Dockerfile or an
+// init container:
+//
+//	alcatraz models download --dest /opt/alcatraz/models
+//
+// It prints both directories the config wants: ModelsDir, and the ModelPath
+// beneath it. See the alcatraz/models package for the pin table itself.
+//
 // The Engine implements analyzer.NlpEngine, so an analyzer.Engine configured
 // with SetNlpEngine runs the model once per Analyze call and shares the
 // artifacts with every artifact-aware recognizer:
@@ -86,6 +94,7 @@ import (
 
 	"github.com/gomlx/go-huggingface/tokenizers/api"
 	"github.com/hoophq/alcatraz/analyzer"
+	"github.com/hoophq/alcatraz/models"
 	"github.com/knights-analytics/hugot"
 	"github.com/knights-analytics/hugot/pipelines"
 )
@@ -219,20 +228,20 @@ func New(ctx context.Context, cfg Config) (*Engine, error) {
 // ensureModel returns the local path of cfg.Model, downloading it from
 // Hugging Face into the models directory on first use.
 func ensureModel(ctx context.Context, cfg Config) (string, error) {
-	dir, err := resolveModelsDir(cfg.ModelsDir)
+	dir, err := models.ResolveDir(cfg.ModelsDir)
 	if err != nil {
 		return "", err
 	}
 	// Pinned models take the verified path: every file is checked against
 	// its sha256, so a cache hit is a hit only if the bytes still match
 	// and what New loads is what we pinned, not merely what the hub last
-	// served (see download.go).
-	if _, pinned := modelArtifacts[cfg.Model]; pinned {
-		return EnsureModelIn(ctx, cfg.Model, dir)
+	// served (see the models package).
+	if models.IsPinned(cfg.Model) {
+		return models.EnsureModelIn(ctx, cfg.Model, dir)
 	}
 	// Any other model id keeps working, unverified: hugot's cache check is
 	// presence-only, and so is ours.
-	modelPath := modelDir(dir, cfg.Model)
+	modelPath := models.Dir(dir, cfg.Model)
 	if _, err := os.Stat(filepath.Join(modelPath, "tokenizer.json")); err == nil {
 		return modelPath, nil
 	}

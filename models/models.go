@@ -1,12 +1,20 @@
-package ner
+// Package models materialises the model files alcatraz's optional NER
+// backends need, pinned to an immutable revision and verified against
+// recorded sha256 digests and byte lengths.
+//
+// It lives in the root module rather than in ner on purpose. The alcatraz
+// CLI ships "alcatraz models download" so a model can be fetched as a build
+// or deploy step, and that command must not drag the ONNX model runtime —
+// nor its newer Go requirement — into a module that is otherwise standard
+// library only. Nothing here imports anything outside the standard library.
+//
+// The ner package re-exports EnsureModel, EnsureModelIn and PinnedModels, so
+// NER users still have a single import.
+package models
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"path"
 	"path/filepath"
@@ -14,9 +22,10 @@ import (
 	"strings"
 )
 
-// hubBaseURL is the Hugging Face origin the pinned artifacts are fetched
-// from. It is a var so tests can point it at a local server.
-var hubBaseURL = "https://huggingface.co"
+// DefaultModel is the model ner uses unless told otherwise, and the default
+// for "alcatraz models download". It is the single place the id is written
+// down: ner.DefaultConfig and the pin table below both refer to this.
+const DefaultModel = "KnightsAnalytics/distilbert-NER"
 
 // modelFile is one file of a model repository, pinned by content hash.
 type modelFile struct {
@@ -56,7 +65,7 @@ type modelArtifact struct {
 //	curl -sSLo /tmp/f https://huggingface.co/$REPO/resolve/$rev/$FILE
 //	shasum -a 256 /tmp/f && wc -c < /tmp/f
 var modelArtifacts = map[string]modelArtifact{
-	"KnightsAnalytics/distilbert-NER": {
+	DefaultModel: {
 		revision: "13a742d5ea02349d17e18f3755301282c9ee33f7",
 		files: []modelFile{
 			{path: "config.json", sha256: "8f9f01d47f61087197f9fa85185d4a7a6248333c15af1b221aa5e8b9b76462b5", size: 925},
@@ -70,7 +79,7 @@ var modelArtifacts = map[string]modelArtifact{
 }
 
 // PinnedModels returns, sorted, the model ids EnsureModel can fetch and
-// verify. Other model ids still work through Config.Model, but nothing
+// verify. Other model ids still work through ner.Config.Model, but nothing
 // checks what the hub serves for them.
 func PinnedModels() []string {
 	ids := make([]string, 0, len(modelArtifacts))
@@ -81,17 +90,60 @@ func PinnedModels() []string {
 	return ids
 }
 
-// EnsureModel downloads model into the models directory New reads from and
-// returns the local directory holding it, so a warm cache makes New
+// IsPinned reports whether EnsureModel can verify model.
+func IsPinned(model string) bool {
+	_, ok := modelArtifacts[model]
+	return ok
+}
+
+// PinnedFile describes one verified file of a pinned model, as it lands on
+// disk.
+type PinnedFile struct {
+	// Name is the file's name inside the model directory. Repository paths
+	// are flattened to their base name on download, so this is what a
+	// caller finds on disk, not the path within the repository.
+	Name string
+	// SHA256 is the hex digest EnsureModel verifies the file against.
+	SHA256 string
+	// Size is the exact byte length.
+	Size int64
+}
+
+// PinnedFiles returns the files EnsureModel verifies for model, in the order
+// it fetches them, or nil if the model is not pinned. It lets a caller show
+// what a download will cost, and what it verified, without EnsureModel
+// having to report progress itself.
+func PinnedFiles(model string) []PinnedFile {
+	art, ok := modelArtifacts[model]
+	if !ok {
+		return nil
+	}
+	out := make([]PinnedFile, 0, len(art.files))
+	for _, f := range art.files {
+		// path.Base, not filepath.Base: repository paths are always
+		// slash-separated, whatever the host OS uses.
+		out = append(out, PinnedFile{Name: path.Base(f.path), SHA256: f.sha256, Size: f.size})
+	}
+	return out
+}
+
+// Revision returns the commit sha model is pinned to, or "" if it is not
+// pinned.
+func Revision(model string) string {
+	return modelArtifacts[model].revision
+}
+
+// EnsureModel downloads model into the models directory ner.New reads from
+// and returns the local directory holding it, so a warm cache makes ner.New
 // network-free and the returned path can be handed straight to
-// Config.ModelPath.
+// ner.Config.ModelPath.
 //
 // Every file is pinned to a sha256 and a byte length, re-verified on each
 // call, cache hits included: a file that exists is not evidence that it is
 // the file we asked for. A mismatched file is fetched again. Re-hashing the
 // whole model costs roughly half a second for the 260MB default against a
-// warm page cache — small enough beside session setup that New verifies too,
-// rather than trusting the cache once it is populated.
+// warm page cache — small enough beside session setup that ner.New verifies
+// too, rather than trusting the cache once it is populated.
 //
 // It is idempotent, and safe to call concurrently and from several
 // processes: each file is written to a temp file and renamed into place, so
@@ -110,16 +162,16 @@ func EnsureModel(ctx context.Context, model string) (string, error) {
 func EnsureModelIn(ctx context.Context, model, dir string) (string, error) {
 	art, ok := modelArtifacts[model]
 	if !ok {
-		return "", fmt.Errorf("ner: model %q has no pinned checksums, so it cannot be verified (pinned models: %s)",
+		return "", fmt.Errorf("models: model %q has no pinned checksums, so it cannot be verified (pinned models: %s)",
 			model, strings.Join(PinnedModels(), ", "))
 	}
-	dir, err := resolveModelsDir(dir)
+	dir, err := ResolveDir(dir)
 	if err != nil {
 		return "", err
 	}
-	modelPath := modelDir(dir, model)
+	modelPath := Dir(dir, model)
 	if err := os.MkdirAll(modelPath, 0o755); err != nil {
-		return "", fmt.Errorf("ner: creating model directory: %w", err)
+		return "", fmt.Errorf("models: creating model directory: %w", err)
 	}
 	for _, f := range art.files {
 		// path.Base, not filepath.Base: repository paths are always
@@ -130,109 +182,37 @@ func EnsureModelIn(ctx context.Context, model, dir string) (string, error) {
 		}
 		url := fmt.Sprintf("%s/%s/resolve/%s/%s", hubBaseURL, model, art.revision, f.path)
 		if err := download(ctx, url, dest, f.sha256, f.size, 0o644); err != nil {
-			return "", fmt.Errorf("ner: downloading %s for model %s: %w", f.path, model, err)
+			return "", fmt.Errorf("models: downloading %s for model %s: %w", f.path, model, err)
 		}
 	}
 	return modelPath, nil
 }
 
-// resolveModelsDir returns dir, or (creating it) the default models
-// directory when dir is empty: "alcatraz/models" under the user cache dir.
-func resolveModelsDir(dir string) (string, error) {
+// ResolveDir returns dir, or (creating it) the default models directory when
+// dir is empty: "alcatraz/models" under the user cache dir. This is the
+// directory ner.Config.ModelsDir names — the parent of what EnsureModelIn
+// returns, not the model directory itself.
+func ResolveDir(dir string) (string, error) {
 	if dir != "" {
 		return dir, nil
 	}
 	cache, err := os.UserCacheDir()
 	if err != nil {
-		return "", fmt.Errorf("ner: locating the user cache directory: %w", err)
+		return "", fmt.Errorf("models: locating the user cache directory: %w", err)
 	}
 	dir = filepath.Join(cache, "alcatraz", "models")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", fmt.Errorf("ner: creating the models directory: %w", err)
+		return "", fmt.Errorf("models: creating the models directory: %w", err)
 	}
 	return dir, nil
 }
 
-// modelDir returns the directory a model occupies inside a models
-// directory. It reproduces hugot's naming so both downloaders agree on
-// where a model lives: the id with "/" replaced by "_", minus any ":suffix".
-func modelDir(modelsDir, model string) string {
+// Dir returns the directory a model occupies inside a models directory. It
+// reproduces hugot's naming so both downloaders agree on where a model
+// lives: the id with "/" replaced by "_", minus any ":suffix".
+func Dir(modelsDir, model string) string {
 	if i := strings.Index(model, ":"); i >= 0 {
 		model = model[:i]
 	}
 	return filepath.Join(modelsDir, strings.ReplaceAll(model, "/", "_"))
-}
-
-// cachedFileValid reports whether path exists and still matches the pinned
-// sha256.
-//
-// A mismatched file is left where it is rather than unlinked: download
-// replaces it by renaming over it, which is atomic, and unlinking here is
-// not. Two callers that find the same corrupt file both hold handles to it,
-// and the slower one would unlink the pathname after the faster one had
-// already installed a verified replacement under it — deleting a good file
-// that its caller had been told was ready.
-func cachedFileValid(path, wantSHA256 string) bool {
-	f, err := os.Open(path)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-
-	hasher := sha256.New()
-	if _, err := io.Copy(hasher, f); err != nil {
-		return false
-	}
-	return hex.EncodeToString(hasher.Sum(nil)) == wantSHA256
-}
-
-// download fetches url into dest atomically: it streams to a temp file in
-// the destination directory, verifies the byte length and the sha256, sets
-// mode, and renames. A failed, corrupt, truncated or oversized download never
-// leaves a file at dest.
-func download(ctx context.Context, url, dest, wantSHA256 string, wantSize int64, mode os.FileMode) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return err
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GET %s: unexpected status %s", url, resp.Status)
-	}
-
-	tmp, err := os.CreateTemp(filepath.Dir(dest), filepath.Base(dest)+".partial-*")
-	if err != nil {
-		return err
-	}
-	defer func() {
-		tmp.Close()
-		os.Remove(tmp.Name())
-	}()
-
-	hasher := sha256.New()
-	// Bounded one byte past the pin, so an endpoint that never stops
-	// sending is cut off rather than filling the disk before the digest
-	// gets a chance to reject anything. The bound is on bytes actually
-	// read, not on Content-Length, which the endpoint also controls.
-	n, err := io.Copy(io.MultiWriter(tmp, hasher), io.LimitReader(resp.Body, wantSize+1))
-	if err != nil {
-		return err
-	}
-	if n != wantSize {
-		return fmt.Errorf("size mismatch for %s: got %d bytes, want %d", url, n, wantSize)
-	}
-	if got := hex.EncodeToString(hasher.Sum(nil)); got != wantSHA256 {
-		return fmt.Errorf("sha256 mismatch for %s: got %s, want %s", url, got, wantSHA256)
-	}
-	if err := tmp.Chmod(mode); err != nil {
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), dest)
 }

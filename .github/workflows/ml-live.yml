@@ -9,6 +9,9 @@ on:
     paths:
       - "ner/**"
       - "pfilter/**"
+      # The pin table lives here: a revision or digest bump must be proved
+      # against what the hub actually serves before it lands.
+      - "models/**"
       - "analyzer/nlp*.go"
       - ".github/workflows/ml-live.yml"
   schedule:
@@ -51,22 +54,30 @@ jobs:
       - name: Cache NER model
         uses: actions/cache@v4
         with:
-          # ner.ensureModel stores models under the user cache dir.
+          # models.ResolveDir stores models under the user cache dir.
           path: |
             ~/.cache/alcatraz/models
             ~/Library/Caches/alcatraz/models
           key: ner-model-${{ runner.os }}-v1
 
+      # Two modules, so two steps. TestLiveEnsureModel now lives in the root
+      # module's models package; it writes to a temp dir, which makes it the
+      # only job here that fetches the pinned URLs and checks the recorded
+      # sizes and digests against what the hub actually serves — the case a
+      # warm cache hides. Running it separately is not cosmetic: folded into
+      # the ner step it would simply stop running, silently.
+      - name: Live model download test
+        env:
+          ALCATRAZ_NER_LIVE: "1"
+        run: go test -v -run TestLiveEnsureModel -timeout 25m ./models/
+
       # TestLiveNER runs against the cache restored above, so it exercises
-      # loading but never downloading. TestLiveEnsureModel writes to a temp
-      # dir instead, which makes it the only job here that fetches the pinned
-      # URLs and checks the recorded sizes and digests against what the hub
-      # actually serves — the case a warm cache hides.
+      # loading but never downloading.
       - name: Live model test
         working-directory: ner
         env:
           ALCATRAZ_NER_LIVE: "1"
-        run: go test -v -run 'TestLiveNER|TestLiveEnsureModel' -timeout 25m ./...
+        run: go test -v -run TestLiveNER -timeout 25m ./...
 
   # pfilter: needs libpf (built from the pinned privacy-filter.cpp revision
   # via the pfilter/dist CMake wrapper, cached) and a GGUF (cached).

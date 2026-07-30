@@ -1,4 +1,4 @@
-package ner
+package models
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -233,7 +234,7 @@ func TestEnsureModelInRejectsChecksumMismatch(t *testing.T) {
 	if !strings.Contains(err.Error(), "sha256 mismatch") {
 		t.Errorf("error = %v, want it to name the sha256 mismatch", err)
 	}
-	assertNoLeftovers(t, modelDir(dir, id), "model.onnx")
+	assertNoLeftovers(t, Dir(dir, id), "model.onnx")
 }
 
 // TestEnsureModelInRejectsOversizedResponse covers the case the digest alone
@@ -255,7 +256,7 @@ func TestEnsureModelInRejectsOversizedResponse(t *testing.T) {
 	if !strings.Contains(err.Error(), "size mismatch") {
 		t.Errorf("error = %v, want it to name the size mismatch", err)
 	}
-	assertNoLeftovers(t, modelDir(dir, id), "model.onnx")
+	assertNoLeftovers(t, Dir(dir, id), "model.onnx")
 }
 
 // TestEnsureModelInRejectsTruncatedResponse checks that a short read fails as
@@ -275,7 +276,7 @@ func TestEnsureModelInRejectsTruncatedResponse(t *testing.T) {
 	if !strings.Contains(err.Error(), "size mismatch") {
 		t.Errorf("error = %v, want it to name the size mismatch", err)
 	}
-	assertNoLeftovers(t, modelDir(dir, id), "model.onnx")
+	assertNoLeftovers(t, Dir(dir, id), "model.onnx")
 }
 
 func TestEnsureModelInMissingFileLeavesNoPartial(t *testing.T) {
@@ -292,7 +293,7 @@ func TestEnsureModelInMissingFileLeavesNoPartial(t *testing.T) {
 	if !strings.Contains(err.Error(), "model.onnx") {
 		t.Errorf("error = %v, want it to name the file that failed", err)
 	}
-	assertNoLeftovers(t, modelDir(dir, id), "model.onnx")
+	assertNoLeftovers(t, Dir(dir, id), "model.onnx")
 }
 
 func TestEnsureModelUnpinnedModel(t *testing.T) {
@@ -344,7 +345,7 @@ func TestEnsureModelInConcurrent(t *testing.T) {
 	}
 	// Whoever won each rename, the result must be the pinned bytes and
 	// nothing else — no torn file, no surviving temp file.
-	entries, err := os.ReadDir(modelDir(dir, id))
+	entries, err := os.ReadDir(Dir(dir, id))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -352,7 +353,7 @@ func TestEnsureModelInConcurrent(t *testing.T) {
 		t.Errorf("model dir holds %d entries, want %d", len(entries), len(files))
 	}
 	for name, body := range files {
-		got, err := os.ReadFile(filepath.Join(modelDir(dir, id), name))
+		got, err := os.ReadFile(filepath.Join(Dir(dir, id), name))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -398,7 +399,7 @@ func TestEnsureModelInConcurrentRepair(t *testing.T) {
 	if _, err := EnsureModelIn(context.Background(), id, dir); err != nil {
 		t.Fatalf("seeding the cache: %v", err)
 	}
-	tampered := filepath.Join(modelDir(dir, id), "model.onnx")
+	tampered := filepath.Join(Dir(dir, id), "model.onnx")
 	if err := os.WriteFile(tampered, []byte("malicious"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -438,8 +439,8 @@ func TestModelDir(t *testing.T) {
 		{"org/model:quantized", "org_model"},
 	}
 	for _, c := range cases {
-		if got := modelDir("/models", c.model); got != filepath.Join("/models", c.want) {
-			t.Errorf("modelDir(%q) = %q, want .../%s", c.model, got, c.want)
+		if got := Dir("/models", c.model); got != filepath.Join("/models", c.want) {
+			t.Errorf("Dir(%q) = %q, want .../%s", c.model, got, c.want)
 		}
 	}
 }
@@ -480,9 +481,33 @@ func TestPinnedArtifactsWellFormed(t *testing.T) {
 }
 
 func TestDefaultModelIsPinned(t *testing.T) {
-	if _, ok := modelArtifacts[DefaultConfig().Model]; !ok {
-		t.Errorf("default model %q is not pinned, so New downloads it unverified",
-			DefaultConfig().Model)
+	if !IsPinned(DefaultModel) {
+		t.Errorf("default model %q is not pinned, so it would be fetched unverified", DefaultModel)
+	}
+}
+
+// TestPinnedFiles checks the view the CLI builds its manifest from: the same
+// files as the pin table, in the same order, named as they land on disk
+// rather than as they sit in the repository.
+func TestPinnedFiles(t *testing.T) {
+	if got := PinnedFiles("some-org/unpinned-model"); got != nil {
+		t.Errorf("PinnedFiles(unpinned) = %v, want nil", got)
+	}
+
+	id, files, art := testModel(t)
+	art.files = append(art.files, modelFile{path: "nested/config.json", sha256: sum(files["tokenizer.json"]), size: 1})
+	hub := newFakeHub(t, files)
+	pinTestModel(t, hub, id, art)
+
+	got := PinnedFiles(id)
+	if len(got) != len(art.files) {
+		t.Fatalf("PinnedFiles returned %d files, want %d", len(got), len(art.files))
+	}
+	for i, f := range art.files {
+		want := PinnedFile{Name: path.Base(f.path), SHA256: f.sha256, Size: f.size}
+		if got[i] != want {
+			t.Errorf("file %d = %+v, want %+v", i, got[i], want)
+		}
 	}
 }
 
@@ -495,7 +520,7 @@ func TestLiveEnsureModel(t *testing.T) {
 	if os.Getenv("ALCATRAZ_NER_LIVE") != "1" {
 		t.Skip("set ALCATRAZ_NER_LIVE=1 to run the live download test")
 	}
-	model := DefaultConfig().Model
+	model := DefaultModel
 	dir := os.Getenv("ALCATRAZ_NER_MODELS_DIR")
 	if dir == "" {
 		dir = t.TempDir()

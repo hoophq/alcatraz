@@ -8,7 +8,13 @@
 //	alcatraz diff [flags]              read a unified diff on stdin, scan added lines
 //	alcatraz hook <claude-post|claude-prompt> [flags]
 //	                                   Claude Code hook processors (see hook.go)
+//	alcatraz models download [flags]   fetch a verified NER model (see models.go)
 //	alcatraz version                   print the version
+//
+// Scanning is the network-free part, and it is the whole product: no
+// telemetry, no lookups, nothing leaves the process. "models download" is the
+// single exception, and it exists so a deployment can fetch the optional NER
+// model deliberately, from pinned URLs, instead of on first use.
 //
 // Exit codes: 0 = no findings, 1 = findings detected, 2 = error. Hook mode
 // always exits 0 — findings are handled via hook output, never exit codes.
@@ -36,7 +42,7 @@ func main() {
 
 func run(args []string) (int, error) {
 	if len(args) == 0 {
-		return 0, fmt.Errorf("usage: alcatraz <scan|diff|version> [flags] [path ...]")
+		return 0, fmt.Errorf("usage: alcatraz <scan|diff|hook|models|version> [flags] [path ...]")
 	}
 	cmd, rest := args[0], args[1:]
 	switch cmd {
@@ -45,9 +51,11 @@ func run(args []string) (int, error) {
 		return 0, nil
 	case "hook":
 		return runHook(rest)
+	case "models":
+		return runModels(rest)
 	case "scan", "diff":
 	default:
-		return 0, fmt.Errorf("unknown command %q (want scan, diff, hook, or version)", cmd)
+		return 0, fmt.Errorf("unknown command %q (want scan, diff, hook, models, or version)", cmd)
 	}
 
 	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)

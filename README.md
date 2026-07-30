@@ -309,8 +309,9 @@ ModelPath: /opt/alcatraz/models/KnightsAnalytics_distilbert-NER
 ```
 
 Every file is pinned to a commit revision and checked against a known sha256
-and byte size; a mismatch fails the command with a non-zero exit and installs
-nothing. Re-running is cheap and offline — files already present are
+and byte size; a mismatch fails the command with a non-zero exit, and the
+bytes that failed are never installed. Files verified earlier in the same run
+are kept, which is what makes re-running cheap and offline — they are
 re-verified, not re-fetched. Note that the command lives in the **root**
 module, so the plain `alcatraz` binary (Homebrew, `go install`, or a release
 download) can fetch the model without the ONNX runtime being anywhere near it.
@@ -342,7 +343,11 @@ spec:
   initContainers:
     - name: fetch-ner-model
       image: your-registry/alcatraz:latest # any image carrying the alcatraz binary
-      args: ["models", "download", "--dest", "/models"]
+      # command:, not args: — args replaces the image's CMD but inherits its
+      # ENTRYPOINT, so it only works when that entrypoint is alcatraz itself.
+      # On an image that merely carries the binary, args makes Kubernetes try
+      # to exec "models", and the init container crash-loops.
+      command: ["alcatraz", "models", "download", "--dest", "/models"]
       volumeMounts:
         - { name: alcatraz-models, mountPath: /models }
   containers:

@@ -6,9 +6,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/hoophq/alcatraz/models"
 )
@@ -50,7 +53,17 @@ func runModels(args []string) (int, error) {
 	if fs.NArg() > 0 {
 		return 0, fmt.Errorf("models download: unexpected argument %q", fs.Arg(0))
 	}
-	return download(context.Background(), os.Stdout, *model, *dest)
+	// Cancel on a signal rather than dying where we stand. The download
+	// streams to a temp file it removes on the way out, and that cleanup is a
+	// defer — which a signalled process never reaches, stranding up to 250MB
+	// under a ".partial-*" name that no later run reclaims. Being evicted or
+	// rescheduled mid-fetch is routine for the init container this command is
+	// documented to run as, and there the leak lands on a volume that outlives
+	// the pod. SIGKILL is still unrecoverable, but in Kubernetes it only
+	// follows SIGTERM and the grace period.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return download(ctx, os.Stdout, *model, *dest)
 }
 
 func download(ctx context.Context, out io.Writer, model, dest string) (int, error) {
@@ -92,15 +105,30 @@ func download(ctx context.Context, out io.Writer, model, dest string) (int, erro
 
 // hintFor turns a download failure into something the operator can act on.
 // The underlying error says what broke; this says what to do about it.
+//
+// A failure that already explains itself gets nothing. The destination being
+// unwritable, or the disk full, is the likeliest failure in the deployment
+// this command is built for — a non-root container writing a mounted volume —
+// and answering it with a note about proxies sends the operator off to debug
+// egress that was never involved.
 func hintFor(err error) string {
+	var urlErr *url.Error
 	switch msg := err.Error(); {
 	case strings.Contains(msg, "sha256 mismatch"), strings.Contains(msg, "size mismatch"):
 		return "\n  the bytes served do not match the pinned checksums — the transfer was corrupted," +
-			"\n  intercepted, or the cached copy was modified. Nothing was installed; re-run to fetch again."
+			"\n  intercepted, or the cached copy was modified. The mismatched file was not installed;" +
+			"\n  re-run to fetch it again — files already verified are kept, not fetched twice."
+	// Before the *url.Error arm: a cancelled request surfaces as a *url.Error
+	// wrapping context.Canceled, and the interruption is the useful half.
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return "\n  the download was interrupted; re-run to resume (verified files are not re-fetched)."
-	default:
+	case errors.As(err, &urlErr):
 		return "\n  only huggingface.co is contacted; behind a proxy, set HTTPS_PROXY."
+	case strings.Contains(msg, "unexpected status"):
+		return "\n  huggingface.co answered but would not serve the file; the pinned revision may have" +
+			"\n  been withdrawn, or the request was rate limited."
+	default:
+		return ""
 	}
 }
 

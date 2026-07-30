@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,15 +13,21 @@ import (
 	"github.com/hoophq/alcatraz/models"
 )
 
+// ensureCall records what the swapped-in downloader was handed.
+type ensureCall struct {
+	ctx         context.Context
+	model, dest string
+}
+
 // stubEnsure swaps the downloader for the duration of a test, so the command
 // is exercised without touching the network. It records the arguments it was
 // called with, since flag handling is most of what these tests check.
-func stubEnsure(t *testing.T, ret string, err error) *struct{ model, dest string } {
+func stubEnsure(t *testing.T, ret string, err error) *ensureCall {
 	t.Helper()
-	got := &struct{ model, dest string }{}
+	got := &ensureCall{}
 	prev := ensureModelIn
-	ensureModelIn = func(_ context.Context, model, dest string) (string, error) {
-		got.model, got.dest = model, dest
+	ensureModelIn = func(ctx context.Context, model, dest string) (string, error) {
+		got.ctx, got.model, got.dest = ctx, model, dest
 		return ret, err
 	}
 	t.Cleanup(func() { ensureModelIn = prev })
@@ -111,11 +119,26 @@ func TestModelsDownloadFailureIsActionable(t *testing.T) {
 	cases := []struct {
 		name string
 		err  error
+		// want is a substring the hint must add. Empty means the failure
+		// speaks for itself and must not be dressed up as a network problem.
 		want string
 	}{
 		{"checksum", errors.New("models: downloading model.onnx: sha256 mismatch for x: got a, want b"), "re-run"},
 		{"size", errors.New("models: downloading model.onnx: size mismatch for x: got 1, want 2"), "re-run"},
-		{"transport", errors.New("models: downloading model.onnx: dial tcp: i/o timeout"), "HTTPS_PROXY"},
+		{
+			"transport",
+			fmt.Errorf("models: downloading model.onnx: %w", &url.Error{
+				Op: "Get", URL: "https://huggingface.co/x", Err: errors.New("dial tcp: i/o timeout"),
+			}),
+			"HTTPS_PROXY",
+		},
+		{"status", errors.New("models: downloading model.onnx: GET https://x: unexpected status 404 Not Found"), "withdrawn"},
+		{"interrupted", fmt.Errorf("models: downloading model.onnx: %w", context.Canceled), "interrupted"},
+		// The deployment this command targets is a non-root container writing
+		// a mounted volume, which makes this the likeliest failure of all.
+		// Answering it with HTTPS_PROXY sends the operator to debug egress
+		// that was never involved.
+		{"local", errors.New("models: creating model directory: mkdir /x: permission denied"), ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -124,10 +147,29 @@ func TestModelsDownloadFailureIsActionable(t *testing.T) {
 			if err == nil {
 				t.Fatal("runModels succeeded, want the download error")
 			}
+			if c.want == "" {
+				if strings.Contains(err.Error(), "HTTPS_PROXY") {
+					t.Errorf("error = %v, want no proxy hint for a local failure", err)
+				}
+				return
+			}
 			if !strings.Contains(err.Error(), c.want) {
 				t.Errorf("error = %v, want a hint mentioning %q", err, c.want)
 			}
 		})
+	}
+}
+
+func TestModelsDownloadContextIsCancellable(t *testing.T) {
+	got := stubEnsure(t, t.TempDir(), nil)
+	if _, err := runModels([]string{"download"}); err != nil {
+		t.Fatalf("runModels: %v", err)
+	}
+	// context.Background().Done() is nil. A non-nil channel is what proves a
+	// signal can unwind the fetch, which is what lets download remove its
+	// temp file instead of stranding up to 250MB of it on a shared volume.
+	if got.ctx == nil || got.ctx.Done() == nil {
+		t.Error("runModels passed a context that cannot be cancelled; a signal would strand the partial download")
 	}
 }
 

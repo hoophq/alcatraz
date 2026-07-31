@@ -38,6 +38,19 @@ lives in a **separate module** so importers of the core never pull the dep.
       per **byte**, shifting all subsequent token spans on multi-byte input.
       File an issue/PR; once fixed upstream the ASCII-fold workaround can be
       retired.
+- [x] Word-boundary guarantee: spans are grown to the word they sit inside and
+      same-type spans that then touch are unioned, so a subword split never
+      reaches a caller as half a name (`ner/words.go`).
+- [ ] Upstream: hugot `getGoTokens` (`backends/tokenizer_go.go`) decodes each
+      token id on its own, and the WordPiece decoder is configured with
+      `cleanup: true`, so the `##` marker is stripped before
+      `gatherPreEntities` compares token length to the source slice. `isSubword`
+      is therefore always false on `BackendGo` and every word-aggregating
+      strategy (FIRST/MAX/AVERAGE) is inert there — the Rust tokenizer path
+      keeps the marker and works. File an issue/PR (decode the batch in one
+      call, or keep the raw tokens alongside the ids). Independently, SIMPLE
+      aggregation never consults `isSubword` at all and splits on every `B-`
+      tag, so `ner/words.go` stays either way.
 - [x] `pfilter` module (separate module): privacy-filter.cpp backend over
       purego FFI (no cgo — cross-compiles everywhere; the dlopen path builds
       on 64-bit darwin/linux, everything else gets a clean "unsupported" stub).

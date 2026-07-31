@@ -152,6 +152,101 @@ func TestHasWordRune(t *testing.T) {
 	}
 }
 
+// TestSegmentTextIsNotFolded pins the reason the skip decision reads the
+// original text. Every one of these is layout, and every one of them folds to
+// a run of 'x' that hasWordRune would call a word — under SegmentLines a rule
+// line is its own segment, so reading the fold would send it to inference and
+// let a tagged run of placeholders reach the caller as a span over bytes that
+// were never letters.
+func TestSegmentTextIsNotFolded(t *testing.T) {
+	rules := []string{
+		"┌───┬───┐", "├───┼───┤", "└───┴───┘", "│   │   │",
+		"═════", "▀▄▀▄", "•••", "→→→",
+	}
+	for _, rule := range rules {
+		folded, offsets := foldASCII(rule)
+		seg := segment{0, len(folded)}
+		if !hasWordRune(folded) {
+			t.Errorf("fold of %q is %q, which no longer looks like a word — "+
+				"this test is not exercising the hazard any more", rule, folded)
+		}
+		if got := segmentText(rule, offsets, seg); got != rule {
+			t.Errorf("segmentText(%q) = %q, want the original bytes", rule, got)
+		}
+		if hasWordRune(segmentText(rule, offsets, seg)) {
+			t.Errorf("%q counted as a word segment, want it skipped", rule)
+		}
+	}
+
+	// The remap must be exact, not just word-free: a segment that is not the
+	// whole text has to come back as its own bytes. "José" is there so the
+	// fold table is non-nil and the offsets actually shift.
+	const text = "José\t├──┤\tLuan\n"
+	folded, offsets := foldASCII(text)
+	e := &Engine{cfg: Config{Segmentation: SegmentFields}}
+	var kept []string
+	for _, seg := range e.segments(folded) {
+		if s := segmentText(text, offsets, seg); hasWordRune(s) {
+			kept = append(kept, s)
+		}
+	}
+	want := []string{"José\t", "Luan\n"}
+	if fmt.Sprint(kept) != fmt.Sprint(want) {
+		t.Errorf("kept segments = %q, want %q", kept, want)
+	}
+}
+
+// rowsOf runs the segment→window expansion the way ProcessTexts does, on an
+// engine with no model: winTok is nil, so windows falls back to byte windows
+// sized off tokenBudget, which is enough to observe which segments survive.
+func rowsOf(t *testing.T, mode string, texts ...string) []string {
+	t.Helper()
+	e := &Engine{cfg: Config{Segmentation: mode}, tokenBudget: 4096}
+	folded := make([]string, len(texts))
+	foldOffsets := make([][]int, len(texts))
+	for i, text := range texts {
+		folded[i], foldOffsets[i] = foldASCII(text)
+	}
+	rows, _ := e.inferenceRows(texts, folded, foldOffsets)
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r.body)
+	}
+	return out
+}
+
+// TestInferenceRowsSkipsUnicodeRules is the call-site half of
+// TestSegmentTextIsNotFolded: a box-drawn table must send only its data rows
+// to the model. Reading the fold instead of the original would keep all five
+// lines, because "├────┼────┤" folds to a run of 'x'.
+func TestInferenceRowsSkipsUnicodeRules(t *testing.T) {
+	const table = "┌──────┬───────────────┐\n" +
+		"│ name │ email         │\n" +
+		"├──────┼───────────────┤\n" +
+		"│ Luan │ luan@hoop.dev │\n" +
+		"└──────┴───────────────┘\n"
+
+	got := rowsOf(t, SegmentLines, table)
+	want := []string{
+		"x name x email         x\n",
+		"x Luan x luan@hoop.dev x\n",
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("rows = %q\nwant   %q", got, want)
+	}
+
+	// The ASCII table the model would have been fed anyway, so the skip is not
+	// quietly encoding-dependent: same shape in, same two rows out.
+	ascii := "+------+---------------+\n" +
+		"| name | email         |\n" +
+		"+------+---------------+\n" +
+		"| Luan | luan@hoop.dev |\n" +
+		"+------+---------------+\n"
+	if got := len(rowsOf(t, SegmentLines, ascii)); got != 2 {
+		t.Errorf("ASCII table produced %d rows, want 2", got)
+	}
+}
+
 func TestNormalizeSegmentation(t *testing.T) {
 	for in, want := range map[string]string{
 		"":       "",

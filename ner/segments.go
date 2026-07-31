@@ -116,7 +116,24 @@ func isLineSep(b byte) bool { return b == '\n' }
 // into fields either.
 func isFieldSep(b byte) bool { return b == '\n' || b == '\t' }
 
-// hasWordRune reports whether s holds a letter or a digit.
+// segmentText returns a segment's bytes as they appear in the original text.
+// seg indexes the folded text; offsets is the table from foldASCII, nil when
+// the text was already ASCII and folded and original are the same string.
+//
+// The skip decision below has to read the original, because the fold is lossy
+// in exactly the direction that matters: foldRune renders a rune with no ASCII
+// decomposition as the letter 'x', so a box-drawing rule "├────┼────┤" folds
+// to "xxxxxxxxxx" and looks like a word. Under SegmentLines that rule is its
+// own segment, and sending it to inference does not merely waste a call — the
+// model can tag the run, and snapToWords then hands the caller a span over
+// bytes that were never letters.
+func segmentText(text string, offsets []int, seg segment) string {
+	start, end := remapSpan(offsets, len(text), seg.start, seg.end)
+	return text[start:end]
+}
+
+// hasWordRune reports whether s holds a letter or a digit. Callers pass the
+// original text, not the folded rendering — see segmentText.
 //
 // Segments without one are pure layout — a blank line, "|", "+----+----+", a
 // run of dashes — and cannot carry an entity, so they are dropped before

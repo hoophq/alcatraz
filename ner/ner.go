@@ -311,6 +311,47 @@ func (e *Engine) ProcessText(text, language string) (*analyzer.NlpArtifacts, err
 	return all[0], nil
 }
 
+// inferenceRow is one call to the model: one window of one segment of one
+// text, with the offset needed to rebase its spans onto the folded text.
+type inferenceRow struct {
+	textIdx int
+	offset  int // window start, in folded-text bytes
+	body    string
+}
+
+// inferenceRows expands texts into the rows the model will see: each folded
+// text is cut into segments (the caller's Config.Segmentation rule), layout-
+// only segments are dropped, and each surviving segment is windowed to the
+// token budget. A short unsegmented text — the common case — yields exactly
+// one row covering the whole text.
+//
+// The second result records, per text, that some segment needed more than one
+// window. That is the only way one text can report the same entity twice, so
+// it is the only case that needs mergeSpans: segments are disjoint, so their
+// spans never overlap.
+//
+// folded and foldOffsets come from foldASCII over texts, positionally.
+func (e *Engine) inferenceRows(texts, folded []string, foldOffsets [][]int) ([]inferenceRow, []bool) {
+	var rows []inferenceRow
+	windowed := make([]bool, len(texts))
+	for i := range texts {
+		for _, seg := range e.segments(folded[i]) {
+			if !hasWordRune(segmentText(texts[i], foldOffsets[i], seg)) {
+				continue
+			}
+			body := folded[i][seg.start:seg.end]
+			wins := e.windows(body)
+			if len(wins) > 1 {
+				windowed[i] = true
+			}
+			for _, w := range wins {
+				rows = append(rows, inferenceRow{i, seg.start + w.start, body[w.start:w.end]})
+			}
+		}
+	}
+	return rows, windowed
+}
+
 // ProcessTexts implements analyzer.BatchNlpEngine: it runs the model over all
 // texts in batched inference calls and returns one NlpArtifacts per text, in
 // input order. Batching amortizes the per-call tokenization and graph
@@ -336,34 +377,7 @@ func (e *Engine) ProcessTexts(texts []string, language string) ([]*analyzer.NlpA
 		folded[i], foldOffsets[i] = foldASCII(text)
 	}
 
-	// One inference row per window. Short unsegmented texts (the common case)
-	// produce exactly one row covering the whole text.
-	type inferenceRow struct {
-		textIdx int
-		offset  int // window start, in folded-text bytes
-		body    string
-	}
-	var rows []inferenceRow
-	// windowed[i] records that some segment of text i was split across
-	// several windows, which is the only way one text can report an entity
-	// twice. Segments cannot: they are disjoint, so their spans never
-	// overlap.
-	windowed := make([]bool, len(texts))
-	for i := range texts {
-		for _, seg := range e.segments(folded[i]) {
-			body := folded[i][seg.start:seg.end]
-			if !hasWordRune(body) {
-				continue
-			}
-			wins := e.windows(body)
-			if len(wins) > 1 {
-				windowed[i] = true
-			}
-			for _, w := range wins {
-				rows = append(rows, inferenceRow{i, seg.start + w.start, body[w.start:w.end]})
-			}
-		}
-	}
+	rows, windowed := e.inferenceRows(texts, folded, foldOffsets)
 
 	artifacts := make([]*analyzer.NlpArtifacts, len(texts))
 	for i := range texts {

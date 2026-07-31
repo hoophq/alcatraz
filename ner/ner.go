@@ -332,7 +332,9 @@ type inferenceRow struct {
 //
 // folded and foldOffsets come from foldASCII over texts, positionally.
 func (e *Engine) inferenceRows(texts, folded []string, foldOffsets [][]int) ([]inferenceRow, []bool) {
-	var rows []inferenceRow
+	// Exactly right for SegmentWhole over texts that fit a window, which is
+	// the common case; a floor for the rest.
+	rows := make([]inferenceRow, 0, len(texts))
 	windowed := make([]bool, len(texts))
 	for i := range texts {
 		for _, seg := range e.segments(folded[i]) {

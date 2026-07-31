@@ -174,7 +174,13 @@ type Config struct {
 	//   fields   94% recall   4.3x cost
 	//
 	// The cost is inference calls: finer segmentation means more, shorter
-	// sequences. The default stays SegmentWhole because prose is the common
+	// sequences — roughly one per non-blank line under SegmentLines and one
+	// per non-blank cell under SegmentFields. Those multipliers are corpus
+	// averages, not bounds: cost scales with line and cell count rather than
+	// byte count, so a very wide table costs more than the figure above and
+	// is worth measuring on your own output.
+	//
+	// The default stays SegmentWhole because prose is the common
 	// case and finer segmentation cannot help it — a segment boundary is a
 	// hard context boundary, so an entity is never read across one. Callers
 	// streaming tabular or log output should set SegmentLines, and

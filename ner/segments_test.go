@@ -12,11 +12,26 @@ import (
 	"github.com/hoophq/alcatraz/entities"
 )
 
+// testEngine builds a model-less Engine for the segmentation helpers below.
+//
+// It goes through normalizeSegmentation rather than assigning mode straight
+// into the config, because segments falls back to whole on anything it does
+// not recognize: a test that typo'd "line" for "lines" would otherwise pass
+// while silently asserting the wrong rule.
+func testEngine(t *testing.T, mode string) *Engine {
+	t.Helper()
+	norm, err := normalizeSegmentation(mode)
+	if err != nil {
+		t.Fatalf("normalizeSegmentation(%q): %v", mode, err)
+	}
+	return &Engine{cfg: Config{Segmentation: norm}, tokenBudget: 4096}
+}
+
 // segsOf renders the segments of folded under mode as strings, so tests can
 // state the expected split literally.
 func segsOf(t *testing.T, mode, folded string) []string {
 	t.Helper()
-	e := &Engine{cfg: Config{Segmentation: mode}}
+	e := testEngine(t, mode)
 	var out []string
 	for _, s := range e.segments(folded) {
 		out = append(out, folded[s.start:s.end])
@@ -196,18 +211,25 @@ func TestSegmentTextIsNotFolded(t *testing.T) {
 	}
 }
 
-// rowsOf runs the segment→window expansion the way ProcessTexts does, on an
-// engine with no model: winTok is nil, so windows falls back to byte windows
-// sized off tokenBudget, which is enough to observe which segments survive.
-func rowsOf(t *testing.T, mode string, texts ...string) []string {
+// expandRows runs the segment→window expansion the way ProcessTexts does, on
+// an engine with no model: winTok is nil, so windows falls back to byte
+// windows sized off tokenBudget, which is enough to observe which segments
+// survive and which of them needed more than one window.
+func expandRows(t *testing.T, mode string, texts ...string) ([]inferenceRow, []bool) {
 	t.Helper()
-	e := &Engine{cfg: Config{Segmentation: mode}, tokenBudget: 4096}
+	e := testEngine(t, mode)
 	folded := make([]string, len(texts))
 	foldOffsets := make([][]int, len(texts))
 	for i, text := range texts {
 		folded[i], foldOffsets[i] = foldASCII(text)
 	}
-	rows, _ := e.inferenceRows(texts, folded, foldOffsets)
+	return e.inferenceRows(texts, folded, foldOffsets)
+}
+
+// rowsOf is expandRows reduced to the bodies the model would be sent.
+func rowsOf(t *testing.T, mode string, texts ...string) []string {
+	t.Helper()
+	rows, _ := expandRows(t, mode, texts...)
 	out := make([]string, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, r.body)
@@ -247,9 +269,55 @@ func TestInferenceRowsSkipsUnicodeRules(t *testing.T) {
 	}
 }
 
+// TestInferenceRowsWindowedFlag pins the rule that decides whether a text
+// needs mergeSpans afterwards. Only overlapping windows can report the same
+// entity twice; segments are disjoint, so a text cut into many segments that
+// each fit one window has nothing to merge. Keying the flag off the window
+// count is what keeps those apart — "this row starts past zero" would call
+// every segmented text windowed.
+func TestInferenceRowsWindowedFlag(t *testing.T) {
+	// The byte fallback cuts at tokenBudget-fallbackSpecialsSlack bytes, so
+	// this line is comfortably two overlapping windows and the short row is
+	// comfortably one.
+	long := strings.Repeat("Luan Lorenzo ", 400) + "\n"
+	short := "Luan\tLorenzo\tluan@hoop.dev\n"
+	table := strings.Repeat(short, 200)
+
+	for _, tc := range []struct {
+		name string
+		mode string
+		text string
+		want bool
+	}{
+		{"whole, fits one window", SegmentWhole, short, false},
+		{"whole, over budget", SegmentWhole, long, true},
+		{"lines, one line over budget", SegmentLines, short + long, true},
+		{"lines, every line short", SegmentLines, table, false},
+		{"fields, every cell short", SegmentFields, table, false},
+		// Same bytes as the two cases above: segmenting a long table is what
+		// removes the merge, so this pair is the whole point of the flag.
+		{"whole, same table unsegmented", SegmentWhole, table, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rows, windowed := expandRows(t, tc.mode, tc.text)
+			if windowed[0] != tc.want {
+				t.Errorf("windowed = %v, want %v (%d rows)", windowed[0], tc.want, len(rows))
+			}
+		})
+	}
+
+	// The flag is per text, not per batch: one long text must not mark a
+	// short one beside it.
+	_, windowed := expandRows(t, SegmentWhole, short, long, short)
+	if want := []bool{false, true, false}; fmt.Sprint(windowed) != fmt.Sprint(want) {
+		t.Errorf("windowed = %v, want %v", windowed, want)
+	}
+}
+
 func TestNormalizeSegmentation(t *testing.T) {
 	for in, want := range map[string]string{
-		"":       "",
+		// The zero value resolves, so Engine.Config reports the real rule.
+		"":       SegmentWhole,
 		"whole":  SegmentWhole,
 		"lines":  SegmentLines,
 		"fields": SegmentFields,

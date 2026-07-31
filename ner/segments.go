@@ -48,17 +48,20 @@ type segment struct {
 	start, end int
 }
 
-// normalizeSegmentation lower-cases Config.Segmentation and rejects anything
-// that is not a known rule.
+// normalizeSegmentation lower-cases Config.Segmentation, resolves the zero
+// value to SegmentWhole, and rejects anything that is not a known rule.
 //
 // A misspelling has to be an error rather than a fallback: the quiet result
 // would be analyzing tabular output as one blob, which is the exact failure
 // this option exists to avoid, and it would look like the model simply not
 // finding the names.
 func normalizeSegmentation(mode string) (string, error) {
-	mode = strings.ToLower(mode)
-	switch mode {
-	case "", SegmentWhole, SegmentLines, SegmentFields:
+	switch mode = strings.ToLower(mode); mode {
+	case "":
+		// Resolved rather than passed through, so Engine.Config reports the
+		// rule actually in force instead of the empty string.
+		return SegmentWhole, nil
+	case SegmentWhole, SegmentLines, SegmentFields:
 		return mode, nil
 	default:
 		return "", fmt.Errorf("unknown segmentation %q (want %q, %q or %q)",
@@ -78,6 +81,8 @@ func (e *Engine) segments(folded string) []segment {
 	case SegmentFields:
 		return cutAfter(folded, isFieldSep)
 	default:
+		// SegmentWhole. New resolves the zero value and rejects everything
+		// else, so this arm is the whole-text rule, not a silent fallback.
 		return []segment{{0, len(folded)}}
 	}
 }
@@ -86,7 +91,19 @@ func (e *Engine) segments(folded string) []segment {
 // The separator belongs to the segment it terminates, so the segments
 // concatenate back to the input.
 func cutAfter(folded string, sep func(byte) bool) []segment {
-	segs := make([]segment, 0, 8)
+	// Size the result first. Under SegmentFields a wide table yields one
+	// segment per cell, and growing from a fixed guess copies the whole slice
+	// a dozen times over on exactly the input this option exists to handle.
+	// One separator means at most one more segment — exactly one more unless
+	// the text ends with a separator, in which case this over-counts by one.
+	n := 1
+	for i := 0; i < len(folded); i++ {
+		if sep(folded[i]) {
+			n++
+		}
+	}
+
+	segs := make([]segment, 0, n)
 	start := 0
 	for i := 0; i < len(folded); i++ {
 		if sep(folded[i]) {

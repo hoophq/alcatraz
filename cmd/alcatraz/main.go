@@ -65,6 +65,7 @@ func run(args []string) (int, error) {
 	allowlistFile := fs.String("allowlist-file", "", "file with allowed values, one per line (# comments ok)")
 	jsonOut := fs.Bool("json", false, "emit the findings as JSON instead of text")
 	exclude := fs.String("exclude", "", "comma-separated glob patterns of diff paths to skip (diff only)")
+	useContext := fs.Bool("context", true, "score a match higher when a word naming its entity type precedes it (-context=false for pattern-only scores)")
 	if err := fs.Parse(rest); err != nil {
 		return 0, err
 	}
@@ -75,6 +76,9 @@ func run(args []string) (int, error) {
 	}
 	s := newScanner(*threshold, splitList(*entities), splitList(*ignore), allowList)
 	s.exclude = splitList(*exclude)
+	if !*useContext {
+		s.disableContext()
+	}
 
 	var findings []Finding
 	switch cmd {

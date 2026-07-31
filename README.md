@@ -88,8 +88,10 @@ alcatraz scan -json report.log         # machine-readable output (masked too)
 
 Exit codes are grep-style: `0` clean, `1` findings, `2` error. Flags:
 `-threshold` (default 0.4), `-entities`, `-ignore` (default `DATE_TIME,URL`),
-`-allowlist-file` (one allowed value per line, `#` comments), and `-exclude`
-(diff mode, glob patterns of paths to skip).
+`-allowlist-file` (one allowed value per line, `#` comments), `-exclude`
+(diff mode, glob patterns of paths to skip), and `-context` (default on — see
+[Context-aware scoring](#context-aware-scoring); `-context=false` scores each
+match on its pattern alone).
 
 Scanning never touches the network — no telemetry, no lookups, nothing leaves
 the process. The single exception is `alcatraz models download`, which fetches
@@ -219,6 +221,11 @@ enh := analyzer.NewWordContextEnhancer()
 enh.WordsAfter = 3          // Presidio reads none; labels usually precede values
 eng.SetContextEnhancer(enh)
 ```
+
+On the CLI, `-context=false` does the same thing. Reach for it if you read a
+threshold as a statement about pattern strength alone — "0.8 means a checksum
+validated it" — since a labelled email or phone now clears that line on the
+words around it.
 
 Your own recognizers get the same treatment — see
 [Make it yours](#make-it-yours).

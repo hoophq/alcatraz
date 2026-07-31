@@ -2,8 +2,15 @@ package analyzer
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
+
+// testMaxWord is the word-length bound the scanners get in tests that are not
+// about the bound itself: comfortably past every word they scan, so it never
+// changes what they collect. Enhance derives the real value from the context
+// words in play (contextWords).
+const testMaxWord = 64
 
 // ctxRecognizer reports one fixed span, so a test can choose the exact score
 // and context words the enhancer will see.
@@ -114,7 +121,7 @@ func TestWordsBefore(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := appendWordsBefore(nil, tt.text, tt.end, tt.n)
+			got := appendWordsBefore(nil, tt.text, tt.end, tt.n, testMaxWord)
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("appendWordsBefore(nil, %q, %d, %d) = %q, want %q",
 					tt.text, tt.end, tt.n, got, tt.want)
@@ -142,7 +149,7 @@ func TestWordsAfter(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := appendWordsAfter(nil, tt.text, tt.start, tt.n)
+			got := appendWordsAfter(nil, tt.text, tt.start, tt.n, testMaxWord)
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("appendWordsAfter(nil, %q, %d, %d) = %q, want %q",
 					tt.text, tt.start, tt.n, got, tt.want)
@@ -158,26 +165,178 @@ func TestWordsAfter(t *testing.T) {
 func TestAppendWordsIntoExistingSlice(t *testing.T) {
 	dst := []string{"keep"}
 
-	dst = appendWordsBefore(dst, "one two 1234", 8, 5)
+	dst = appendWordsBefore(dst, "one two 1234", 8, 5, testMaxWord)
 	if want := []string{"keep", "one", "two"}; !reflect.DeepEqual(dst, want) {
 		t.Fatalf("after appendWordsBefore: %q, want %q", dst, want)
 	}
 
-	dst = appendWordsAfter(dst, "one two 1234", 12, 2)
+	dst = appendWordsAfter(dst, "one two 1234", 12, 2, testMaxWord)
 	if want := []string{"keep", "one", "two"}; !reflect.DeepEqual(dst, want) {
 		t.Fatalf("after appendWordsAfter past the end: %q, want %q", dst, want)
 	}
 
-	dst = appendWordsAfter(dst, "1234 three four", 4, 2)
+	dst = appendWordsAfter(dst, "1234 three four", 4, 2, testMaxWord)
 	if want := []string{"keep", "one", "two", "three", "four"}; !reflect.DeepEqual(dst, want) {
 		t.Fatalf("after appendWordsAfter: %q, want %q", dst, want)
 	}
 
 	// Truncating to zero and refilling is what the enhancer does per result:
 	// the buffer's contents must not leak from one result into the next.
-	dst = appendWordsBefore(dst[:0], "my email 1234", 9, 5)
+	dst = appendWordsBefore(dst[:0], "my email 1234", 9, 5, testMaxWord)
 	if want := []string{"my", "email"}; !reflect.DeepEqual(dst, want) {
 		t.Fatalf("after reuse: %q, want %q", dst, want)
+	}
+}
+
+// TestFoldWord covers the bound that keeps a long opaque run — a base64 blob,
+// a hash, a JWT — from being copied by strings.ToLower only to be thrown away
+// on length by wordMatches.
+func TestFoldWord(t *testing.T) {
+	tests := []struct {
+		name    string
+		word    string
+		maxWord int
+		want    string
+	}{
+		{"short word is lower-cased", "Email", 7, "email"},
+		{"word exactly at the bound is lower-cased", "Address", 7, "address"},
+		{"word past the bound is left alone", "AddressX", 7, "AddressX"},
+		{"multi-byte under the bound", "JOSÉ", 7, "josé"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := foldWord(tt.word, tt.maxWord); got != tt.want {
+				t.Errorf("foldWord(%q, %d) = %q, want %q",
+					tt.word, tt.maxWord, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestAppendWordsSkipsCasingLongRuns is the scanner half of TestFoldWord: an
+// over-long run still takes its slot in the window — dropping it would shift
+// the words behind it — but arrives uncased, i.e. uncopied.
+func TestAppendWordsSkipsCasingLongRuns(t *testing.T) {
+	const run = "AbCdEfGhIjKlMnOp"
+	text := "Label " + run + " 1234 " + run + " Tail"
+
+	before := appendWordsBefore(nil, text, len("Label "+run+" "), 5, 8)
+	if want := []string{"label", run}; !reflect.DeepEqual(before, want) {
+		t.Fatalf("appendWordsBefore = %q, want %q", before, want)
+	}
+	after := appendWordsAfter(nil, text, len("Label "+run+" 1234"), 5, 8)
+	if want := []string{run, "tail"}; !reflect.DeepEqual(after, want) {
+		t.Fatalf("appendWordsAfter = %q, want %q", after, want)
+	}
+	// Uncased is safe only because nothing that long can match anyway.
+	if wordMatches(run, strings.ToLower(run)) {
+		t.Error("a word past the bound reached wordMatches and matched")
+	}
+}
+
+// TestContextWordsBound pins the bound Enhance hands the scanners: the longest
+// context word in play plus the two bytes wordMatches allows for the plural
+// fold. Deriving it from the words themselves is what keeps a caller's long
+// custom context word working instead of silently never matching.
+func TestContextWordsBound(t *testing.T) {
+	rec := &ctxRecognizer{
+		name: "R", entity: "TEST", span: [2]int{0, 4}, score: 0.3,
+		context: []string{"iban", "henkilötunnus"}, // 4 and 14 bytes
+	}
+	results := []Result{{RecognizerName: "R", Score: 0.3}}
+
+	_, maxWord := contextWords([]Recognizer{rec}, results)
+	if want := len("henkilötunnus") + 2; maxWord != want {
+		t.Errorf("maxWord = %d, want %d", maxWord, want)
+	}
+}
+
+// TestLongRunDoesNotHideContext is why the scanners bound copying rather than
+// traversal: abandoning a scan on a long run would lose the label sitting
+// behind it, which is exactly the shape of a logged blob with a field name in
+// front of it.
+func TestLongRunDoesNotHideContext(t *testing.T) {
+	blob := strings.Repeat("aBcD1234", 512) // 4 KiB, no separators
+	text := "card " + blob + " 1234"
+	rec := &ctxRecognizer{
+		name: "R", entity: "TEST",
+		span:  [2]int{len(text) - 4, len(text)},
+		score: 0.3, context: []string{"card"},
+	}
+
+	got := NewWordContextEnhancer().Enhance(text, rec.Analyze(text, nil), []Recognizer{rec}, nil)
+	if len(got) != 1 || !nearly(got[0].Score, 0.65) {
+		t.Fatalf("got %+v, want a single 0.65 result", got)
+	}
+}
+
+// TestWordContextEnhancerNegativeWindow: the window fields are exported, and a
+// negative one used to reach make as a negative capacity and panic Analyze.
+func TestWordContextEnhancerNegativeWindow(t *testing.T) {
+	const text = "my card 1234"
+	rec := &ctxRecognizer{
+		name: "R", entity: "TEST", span: [2]int{8, 12}, score: 0.3,
+		context: []string{"card"},
+	}
+
+	tests := []struct {
+		name          string
+		before, after int
+		want          float64
+	}{
+		{"negative before", -5, 0, 0.3},
+		{"negative after", 5, -5, 0.65},
+		{"both negative", -5, -5, 0.3},
+		{"negative sum", -10, 1, 0.3},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := NewWordContextEnhancer()
+			w.WordsBefore, w.WordsAfter = tt.before, tt.after
+			got := w.Enhance(text, rec.Analyze(text, nil), []Recognizer{rec}, nil)
+			if len(got) != 1 || !nearly(got[0].Score, tt.want) {
+				t.Fatalf("got %+v, want a single %v result", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestWordContextEnhancerClampsToScoreRange: Boost and MinScore are exported
+// too, and Result.Score is documented to stay within [MinScore, MaxScore]
+// whatever they are set to.
+func TestWordContextEnhancerClampsToScoreRange(t *testing.T) {
+	const text = "my card 1234"
+	rec := &ctxRecognizer{
+		name: "R", entity: "TEST", span: [2]int{8, 12}, score: 0.3,
+		context: []string{"card"},
+	}
+
+	tests := []struct {
+		name           string
+		boost, minimum float64
+		want           float64
+	}{
+		{"floor below MinScore cannot take a score negative", -1, -5, MinScore},
+		{"negative boost cannot go below the floor", -5, 0.4, 0.4},
+		{"negative boost with a zero floor stops at MinScore", -5, 0, MinScore},
+		{"floor above MaxScore is pulled down", 0, 5, MaxScore},
+		{"huge boost is capped", 99, 0.4, MaxScore},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := NewWordContextEnhancer()
+			w.Boost, w.MinScore = tt.boost, tt.minimum
+			got := w.Enhance(text, rec.Analyze(text, nil), []Recognizer{rec}, nil)
+			if len(got) != 1 {
+				t.Fatalf("got %d results, want 1", len(got))
+			}
+			if !nearly(got[0].Score, tt.want) {
+				t.Errorf("score = %v, want %v", got[0].Score, tt.want)
+			}
+			if got[0].Score < MinScore || got[0].Score > MaxScore {
+				t.Errorf("score %v is outside [%v, %v]", got[0].Score, MinScore, MaxScore)
+			}
+		})
 	}
 }
 

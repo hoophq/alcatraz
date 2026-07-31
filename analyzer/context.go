@@ -112,29 +112,40 @@ func (w *WordContextEnhancer) Enhance(text string, results []Result, recs []Reco
 	if len(results) == 0 {
 		return results
 	}
-	byRecognizer := contextWords(recs, results)
+	byRecognizer, maxWord := contextWords(recs, results)
 	if len(byRecognizer) == 0 {
 		return results
 	}
 
+	// The fields are exported for tuning, so read them defensively rather than
+	// trusting them: a negative window size is a caller's slip, not a request
+	// to read backwards, and it would otherwise reach make as a negative
+	// capacity and panic the whole Analyze call.
+	before, after := max(w.WordsBefore, 0), max(w.WordsAfter, 0)
+
+	// Result.Score is documented to stay within [MinScore, MaxScore]. Pulling
+	// the floor into range here keeps every score written below in range too,
+	// whatever the caller set, and without a second clamp per result.
+	floor := min(max(w.MinScore, MinScore), MaxScore)
+
 	// One window buffer for the whole call: on a chunk of log or query output
 	// this runs once per detection, and a fresh slice each time would be the
 	// bulk of what the enhancer allocates.
-	window := make([]string, 0, w.WordsBefore+w.WordsAfter)
+	window := make([]string, 0, before+after)
 
 	for i := range results {
 		want := byRecognizer[results[i].RecognizerName]
 		if len(want) == 0 || results[i].Score >= MaxScore {
 			continue
 		}
-		window = appendWordsBefore(window[:0], text, results[i].Start, w.WordsBefore)
-		window = appendWordsAfter(window, text, results[i].End, w.WordsAfter)
+		window = appendWordsBefore(window[:0], text, results[i].Start, before, maxWord)
+		window = appendWordsAfter(window, text, results[i].End, after, maxWord)
 		if !supported(window, want) {
 			continue
 		}
 		score := results[i].Score + w.Boost
-		if score < w.MinScore {
-			score = w.MinScore
+		if score < floor {
+			score = floor
 		}
 		if score > MaxScore {
 			score = MaxScore
@@ -153,7 +164,10 @@ func (w *WordContextEnhancer) Enhance(text string, results []Result, recs []Reco
 // call typically has dozens of recognizers registered and results from one or
 // two of them, so doing it the other way round would spend the bulk of the
 // work on entries nothing will ever look up.
-func contextWords(recs []Recognizer, results []Result) map[string][][]string {
+//
+// The second return is the longest window word that could still match one of
+// those phrases, in bytes; see foldWord for what the scanners do with it.
+func contextWords(recs []Recognizer, results []Result) (map[string][][]string, int) {
 	byRecognizer := make(map[string][][]string, 4)
 	for _, r := range results {
 		if r.Score < MaxScore {
@@ -161,10 +175,10 @@ func contextWords(recs []Recognizer, results []Result) map[string][][]string {
 		}
 	}
 	if len(byRecognizer) == 0 {
-		return nil
+		return nil, 0
 	}
 
-	found := false
+	longest := 0
 	for _, rec := range recs {
 		cr, ok := rec.(ContextualRecognizer)
 		if !ok {
@@ -175,19 +189,25 @@ func contextWords(recs []Recognizer, results []Result) map[string][][]string {
 		}
 		var phrases [][]string
 		for _, entry := range cr.Context() {
-			if words := splitWords(entry); len(words) > 0 {
-				phrases = append(phrases, words)
+			words := splitWords(entry)
+			if len(words) == 0 {
+				continue
 			}
+			for _, word := range words {
+				longest = max(longest, len(word))
+			}
+			phrases = append(phrases, words)
 		}
 		if len(phrases) > 0 {
 			byRecognizer[rec.Name()] = phrases
-			found = true
 		}
 	}
-	if !found {
-		return nil
+	if longest == 0 {
+		return nil, 0
 	}
-	return byRecognizer
+	// wordMatches accepts at most two trailing bytes past the context word,
+	// for the plural fold.
+	return byRecognizer, longest + 2
 }
 
 // supported reports whether any of the recognizer's context phrases occurs in
@@ -229,6 +249,10 @@ func containsPhrase(window, phrase []string) bool {
 // inflection that shows up in front of a real match — without accepting the
 // unrelated words a substring test would. Anything beyond English plurals
 // needs real lemmas, which is why the context lists spell their variants out.
+//
+// Every case here is bounded by len(context)+2, which is what lets foldWord
+// leave a longer window word uncased: no amount of casing can bring it into
+// range. Loosening the bound means loosening foldWord with it.
 func wordMatches(word, context string) bool {
 	switch {
 	case word == context:
@@ -242,9 +266,31 @@ func wordMatches(word, context string) bool {
 	}
 }
 
+// foldWord lower-cases a window word so it can be compared with the
+// lower-cased context words, unless it is longer than maxWord — the longest
+// word wordMatches could still accept — in which case the copy is dead weight
+// and the word is passed through as a slice of the text.
+//
+// This is what keeps a base64 blob or a long hash sitting in front of a match
+// from being copied in full just to be rejected on length. Measured on a 1 MiB
+// opaque run between a label and an email, it is the difference between
+// 1,057,166 and 2,323 bytes allocated per Analyze call.
+//
+// Note what is *not* bounded: the scanners still walk the run to find its far
+// edge. Traversal is free next to the regex pass that found the match in the
+// first place (596 ms/op either way in the same measurement), and giving up
+// mid-run would silently drop a legitimate label sitting behind the blob.
+func foldWord(s string, maxWord int) string {
+	if len(s) > maxWord {
+		return s
+	}
+	return strings.ToLower(s)
+}
+
 // appendWordsBefore appends up to n words ending before byte offset end to
-// dst, in reading order, and returns the extended slice.
-func appendWordsBefore(dst []string, text string, end, n int) []string {
+// dst, in reading order, and returns the extended slice. maxWord is the
+// longest word worth lower-casing; see foldWord.
+func appendWordsBefore(dst []string, text string, end, n, maxWord int) []string {
 	if n <= 0 || end <= 0 {
 		return dst
 	}
@@ -290,7 +336,7 @@ func appendWordsBefore(dst []string, text string, end, n int) []string {
 			i -= size
 		}
 		if i < wordEnd {
-			dst = append(dst, strings.ToLower(text[i:wordEnd]))
+			dst = append(dst, foldWord(text[i:wordEnd], maxWord))
 		}
 	}
 
@@ -304,7 +350,7 @@ func appendWordsBefore(dst []string, text string, end, n int) []string {
 // appendWordsAfter appends up to n words starting at or after byte offset
 // start to dst and returns the extended slice. A word the boundary cuts in
 // half is skipped, mirroring appendWordsBefore.
-func appendWordsAfter(dst []string, text string, start, n int) []string {
+func appendWordsAfter(dst []string, text string, start, n, maxWord int) []string {
 	if n <= 0 || start >= len(text) {
 		return dst
 	}
@@ -342,7 +388,7 @@ func appendWordsAfter(dst []string, text string, start, n int) []string {
 			i += size
 		}
 		if wordStart < i {
-			dst = append(dst, strings.ToLower(text[wordStart:i]))
+			dst = append(dst, foldWord(text[wordStart:i], maxWord))
 		}
 	}
 	return dst

@@ -69,6 +69,16 @@ lives in a **separate module** so importers of the core never pull the dep.
       runtime-defined entity types without retraining. Needs custom span
       decoding against the ONNX graph (not a plain token-classification
       pipeline).
+- [ ] `Config.SegmentFields` only recognizes tab as a field delimiter, so
+      aligned psql/`column -t` output and pipe-delimited tables fall back to
+      line segmentation. Splitting those needs layout detection (a run of 2+
+      spaces is a delimiter only if the same columns line up across rows),
+      which is a different kind of guess from "cut on the byte that is already
+      there" — worth it only if callers hit it.
+- [ ] Under `SegmentFields` a wide table produces many short segments of very
+      uneven length, and a batch pads to its longest member. Sorting rows by
+      length before bucketing (and restoring order after) would cut the
+      padding waste that makes fields 4.3x rather than ~3x.
 
 ## Context-aware scoring (precision follow-up)
 

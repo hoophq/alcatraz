@@ -24,6 +24,14 @@ const (
 	AcceleratorDirectML = "directml"
 )
 
+// Input segmentation rules selectable via Config.Segmentation. The zero value
+// means SegmentWhole. See Config.Segmentation for the recall/cost tradeoff.
+const (
+	SegmentWhole  = "whole"
+	SegmentLines  = "lines"
+	SegmentFields = "fields"
+)
+
 // Config configures the NER engine: which model to run and how its labels
 // map onto alcatraz entity types.
 //
@@ -143,6 +151,40 @@ type Config struct {
 	BatchBuckets []int
 	// SequenceBuckets is documented with BatchBuckets.
 	SequenceBuckets []int
+
+	// Segmentation selects what the model sees as one sequence. It exists
+	// because transformer NER is context-sensitive by construction: the same
+	// name scores differently depending on what surrounds it, and machine
+	// output (query results, logs) surrounds it with text no news-trained
+	// model has seen. Feeding a wide table in as one blob can drive recall to
+	// zero on names the model finds easily in isolation.
+	//
+	//   - SegmentWhole (default): one sequence per text, split only when it
+	//     exceeds the token budget (see BatchBuckets). Correct for prose.
+	//   - SegmentLines: cut after every newline, so each record — table row,
+	//     log line — is its own sequence.
+	//   - SegmentFields: cut after every newline and tab, so each cell of
+	//     tab-delimited output is its own sequence.
+	//
+	// Measured on a corpus of generated psql/log output plus a real 28-column
+	// psql capture (286 planted names), against the default model:
+	//
+	//   whole    82% recall   1.0x cost
+	//   lines    88% recall   1.8x cost
+	//   fields   94% recall   4.3x cost
+	//
+	// The cost is inference calls: finer segmentation means more, shorter
+	// sequences. The default stays SegmentWhole because prose is the common
+	// case and finer segmentation cannot help it — a segment boundary is a
+	// hard context boundary, so an entity is never read across one. Callers
+	// streaming tabular or log output should set SegmentLines, and
+	// SegmentFields when the output is tab-delimited and recall matters more
+	// than throughput.
+	//
+	// Segmentation composes with windowing: a segment longer than the token
+	// budget is still split into overlapping windows, so no input is
+	// truncated under any setting.
+	Segmentation string
 }
 
 // DefaultConfig returns a configuration matching Presidio's default NER

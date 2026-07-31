@@ -83,6 +83,7 @@ func runHook(args []string) (int, error) {
 	threshold := fs.Float64("threshold", 0.5, "minimum confidence score in [0,1]")
 	entities := fs.String("entities", "", "comma-separated entity types to restrict to (empty = all)")
 	ignore := fs.String("ignore", "DATE_TIME,URL,IP_ADDRESS", "comma-separated entity types to drop as noise")
+	useContext := fs.Bool("context", true, "score a match higher when a word naming its entity type precedes it (-context=false for pattern-only scores)")
 	var skipTools, chain, mode *string
 	switch event {
 	case "claude-post":
@@ -100,6 +101,9 @@ func runHook(args []string) (int, error) {
 	}
 
 	s := newScanner(*threshold, splitList(*entities), splitList(*ignore), nil)
+	if !*useContext {
+		s.disableContext()
+	}
 
 	input, err := io.ReadAll(io.LimitReader(os.Stdin, maxHookBytes+1))
 	if err != nil {

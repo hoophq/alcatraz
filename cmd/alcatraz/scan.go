@@ -50,6 +50,17 @@ func newScanner(threshold float64, entities, ignore, allowList []string) *scanne
 	}
 }
 
+// disableContext turns off context-aware scoring, restoring the scores a
+// pattern gets on its own.
+//
+// This exists for callers who read a threshold as a statement about pattern
+// strength alone — "0.8 means checksum-validated" — since context can lift a
+// labelled email or phone from 0.5 to 0.85 and over that line. The Go API says
+// the same thing with Engine.SetContextEnhancer(nil).
+func (s *scanner) disableContext() {
+	s.engine.SetContextEnhancer(nil)
+}
+
 // excluded reports whether a diff path matches any exclude pattern. Patterns
 // match the full path or its basename; "dir/**" matches everything under dir.
 func (s *scanner) excluded(file string) bool {

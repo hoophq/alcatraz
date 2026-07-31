@@ -10,7 +10,7 @@ import (
 func AUTFN() analyzer.Recognizer {
 	return analyzer.NewPatternRecognizer(
 		"AuTfnRecognizer", entities.AUTFN, "en",
-		[]*analyzer.Pattern{analyzer.MustPattern("AU TFN", `\b\d{3}\s?\d{3}\s?\d{3}\b`, 0.3)},
+		[]*analyzer.Pattern{analyzer.MustPattern("AU TFN", `\b\d{3}`+hsp+`?\d{3}`+hsp+`?\d{3}\b`, 0.3)},
 	).WithContext("tfn", "tax file").WithValidator(validateTFN)
 }
 
@@ -32,7 +32,7 @@ func validateTFN(s string) bool {
 func AUABN() analyzer.Recognizer {
 	return analyzer.NewPatternRecognizer(
 		"AuAbnRecognizer", entities.AUABN, "en",
-		[]*analyzer.Pattern{analyzer.MustPattern("AU ABN", `\b\d{2}\s?\d{3}\s?\d{3}\s?\d{3}\b`, 0.3)},
+		[]*analyzer.Pattern{analyzer.MustPattern("AU ABN", `\b\d{2}`+hsp+`?\d{3}`+hsp+`?\d{3}`+hsp+`?\d{3}\b`, 0.3)},
 	).WithContext("abn", "business number").WithValidator(validateABN)
 }
 
@@ -56,7 +56,7 @@ func validateABN(s string) bool {
 func AUACN() analyzer.Recognizer {
 	return analyzer.NewPatternRecognizer(
 		"AuAcnRecognizer", entities.AUACN, "en",
-		[]*analyzer.Pattern{analyzer.MustPattern("AU ACN", `\b\d{3}\s?\d{3}\s?\d{3}\b`, 0.3)},
+		[]*analyzer.Pattern{analyzer.MustPattern("AU ACN", `\b\d{3}`+hsp+`?\d{3}`+hsp+`?\d{3}\b`, 0.3)},
 	).WithContext("acn", "company number").WithValidator(validateACN)
 }
 
@@ -78,7 +78,7 @@ func validateACN(s string) bool {
 func AUMedicare() analyzer.Recognizer {
 	return analyzer.NewPatternRecognizer(
 		"AuMedicareRecognizer", entities.AUMedicare, "en",
-		[]*analyzer.Pattern{analyzer.MustPattern("AU Medicare", `\b\d{4}\s?\d{5}\s?\d{1}\b`, 0.6)},
+		[]*analyzer.Pattern{analyzer.MustPattern("AU Medicare", `\b\d{4}`+hsp+`?\d{5}`+hsp+`?\d{1}\b`, 0.6)},
 	).WithContext("medicare", "health").WithValidator(validateMedicare)
 }
 

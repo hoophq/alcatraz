@@ -33,7 +33,7 @@ func Phone() analyzer.Recognizer {
 		"PhoneRecognizer", entities.PhoneNumber, "en",
 		[]*analyzer.Pattern{
 			analyzer.MustPattern("Phone (US)",
-				`(?:^|\W)((?:\+?1[-.\s]?)?(?:\(\d{3}\)|\d{3})[-.\s]?\d{3}[-.\s]?\d{4})\b`, 0.5).WithGroup(1),
+				`(?:^|\W)((?:\+?1[-.`+hsp+`]?)?(?:\(\d{3}\)|\d{3})[-.`+hsp+`]?\d{3}[-.`+hsp+`]?\d{4})\b`, 0.5).WithGroup(1),
 			// A '+' country prefix followed by 8-15 digits (the E.164 range)
 			// with at most two separator characters between consecutive
 			// digits. The digit count is enforced by the repetition bounds,
@@ -41,13 +41,13 @@ func Phone() analyzer.Recognizer {
 			// prefix. \B rejects a '+' preceded by a word character, keeping
 			// arithmetic like 2+34567890 out.
 			analyzer.MustPattern("Phone (intl)",
-				`\B\+(?:[\s.()-]{0,2}\d){8,15}\b`, 0.5),
+				`\B\+(?:[`+hsp+`.()-]{0,2}\d){8,15}\b`, 0.5),
 			// Brazilian domestic format: optional 55 country code, 2-digit
 			// area code (DDD), optional mobile '9', then 4+4 digits. Scored
 			// like the US pattern: with balanced parens its shape is no
 			// weaker, and 0.5 clears the `alcatraz hook` default threshold.
 			analyzer.MustPattern("Phone (BR)",
-				`(?:^|\W)((?:\+?55[\s.-]?)?(?:\(\d{2}\)|\d{2})[\s.-]?9?\d{4}[\s.-]?\d{4})\b`, 0.5).WithGroup(1),
+				`(?:^|\W)((?:\+?55[`+hsp+`.-]?)?(?:\(\d{2}\)|\d{2})[`+hsp+`.-]?9?\d{4}[`+hsp+`.-]?\d{4})\b`, 0.5).WithGroup(1),
 		},
 	).WithContext("phone", "number", "telephone", "cell", "mobile")
 }
@@ -90,8 +90,11 @@ func IP() analyzer.Recognizer {
 func URL() analyzer.Recognizer {
 	return analyzer.NewPatternRecognizer(
 		"UrlRecognizer", entities.URL, "en",
+		// The character after the host's first byte is `[^\s]`, not `.`: an
+		// unqualified dot also matches a tab, which lets a URL in one column
+		// swallow the start of the next one.
 		[]*analyzer.Pattern{analyzer.MustPattern("URL",
-			`\b(?:https?://|ftp://|www\.)[^\s/$.?#].[^\s]*\b`, 0.5)},
+			`\b(?:https?://|ftp://|www\.)[^\s/$.?#][^\s][^\s]*\b`, 0.5)},
 	).WithContext("url", "link", "website")
 }
 
@@ -104,10 +107,14 @@ func DateTime() analyzer.Recognizer {
 				`\b(0?[1-9]|1[0-2])[/-](0?[1-9]|[12]\d|3[01])[/-](\d{4})\b`, 0.6),
 			analyzer.MustPattern("Date (ISO)",
 				`\b(\d{4})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])\b`, 0.7),
+			// hsp rather than \s: a date wrapped across a line is rare, while
+			// three adjacent table cells that happen to read as one is not,
+			// and DATE_TIME scores high enough (0.7-0.8) to clear most
+			// caller thresholds and mask them.
 			analyzer.MustPattern("Date (Month DD, YYYY)",
-				`\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),?\s+(\d{4})\b`, 0.8),
+				`\b(January|February|March|April|May|June|July|August|September|October|November|December)`+hsp+`+(\d{1,2}),?`+hsp+`+(\d{4})\b`, 0.8),
 			analyzer.MustPattern("Date (Mon DD, YYYY)",
-				`\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\.?\s+(\d{1,2}),?\s+(\d{4})\b`, 0.7),
+				`\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\.?`+hsp+`+(\d{1,2}),?`+hsp+`+(\d{4})\b`, 0.7),
 		},
 	).WithContext("date", "born", "birthday", "dob")
 }
@@ -119,7 +126,7 @@ func IBAN() analyzer.Recognizer {
 		"IbanRecognizer", entities.IBANCode, "en",
 		[]*analyzer.Pattern{
 			analyzer.MustPattern("IBAN", `\b[A-Z]{2}[0-9]{2}[A-Z0-9]{1,30}\b`, 0.3),
-			analyzer.MustPattern("IBAN (spaces)", `\b([A-Z]{2}[0-9]{2}\s?([A-Z0-9]{4}\s?){1,7}[A-Z0-9]{1,4})\b`, 0.4),
+			analyzer.MustPattern("IBAN (spaces)", `\b([A-Z]{2}[0-9]{2}`+hsp+`?([A-Z0-9]{4}`+hsp+`?){1,7}[A-Z0-9]{1,4})\b`, 0.4),
 		},
 	).WithContext("iban", "account", "bank").WithValidator(validateIBAN)
 }

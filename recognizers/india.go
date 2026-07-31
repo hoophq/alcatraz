@@ -9,7 +9,7 @@ import (
 func INAadhaar() analyzer.Recognizer {
 	return analyzer.NewPatternRecognizer(
 		"InAadhaarRecognizer", entities.INAadhaar, "en",
-		[]*analyzer.Pattern{analyzer.MustPattern("Aadhaar", `\b\d{4}\s?\d{4}\s?\d{4}\b`, 0.6)},
+		[]*analyzer.Pattern{analyzer.MustPattern("Aadhaar", `\b\d{4}`+hsp+`?\d{4}`+hsp+`?\d{4}\b`, 0.6)},
 	).WithContext("aadhaar", "aadhar").WithValidator(func(m string) bool {
 		ds := digitValues(m)
 		if len(ds) != 12 {
@@ -40,7 +40,7 @@ func INVehicle() analyzer.Recognizer {
 	return analyzer.NewPatternRecognizer(
 		"InVehicleRecognizer", entities.INVehicleRegistration, "en",
 		[]*analyzer.Pattern{analyzer.MustPattern("IN Vehicle",
-			`\b[A-Z]{2}\s?\d{1,2}\s?[A-Z]{1,2}\s?\d{4}\b`, 0.6)},
+			`\b[A-Z]{2}`+hsp+`?\d{1,2}`+hsp+`?[A-Z]{1,2}`+hsp+`?\d{4}\b`, 0.6)},
 	).WithContext("vehicle", "registration", "car")
 }
 

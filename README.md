@@ -285,6 +285,65 @@ Design notes:
   grown to the word they sit inside and same-type spans that then touch are
   unioned, so a caller never has to mask half a name.
 
+### Tabular and log output: `Config.Segmentation`
+
+Transformer NER is context-sensitive by construction: a token's label depends
+on every other token in the sequence. That is what makes it good at prose and
+erratic on machine output. Feed it a 28-column `psql` row and the name sits
+among UUIDs, timestamps and JSON that no news-trained model has seen — and the
+whole row can come back empty:
+
+```
+id      org_id  connection  ...  user_email       user_name  user_email     ...
+8aa71f6d-…  8aa73e5c-…  postgres-demo  ...  luan@hoop.dev  Luan  luan@hoop.dev  ...
+```
+
+`PERSON "Luan"` is found instantly on its own. As one blob, three rows of it
+yield **nothing**. Ablating that input shows where the damage comes from:
+
+| Input | Names found |
+|---|---|
+| header + 3 rows | 0/3 |
+| 3 rows, no header | 2/3 |
+| 1 row alone | 1/1 |
+
+A tab-separated header is the worst single thing in there — 28 column names in
+a row is a sequence the model has no reading of, and it drags the rows after it
+down with it. Cross-row context costs the rest.
+
+The fix is not a better model — it is to stop asking the model to read the
+table as a sentence. `ner.Config.Segmentation` chooses what counts as one
+sequence:
+
+| Value | Cuts after | Recall | Cost |
+|---|---|---|---|
+| `SegmentWhole` (default) | nothing — one sequence per text | 82% | 1.0x |
+| `SegmentLines` | `\n`, so each row or log line stands alone | 88% | 1.8x |
+| `SegmentFields` | `\n` and `\t`, so each cell stands alone | 94% | 4.3x |
+
+```go
+cfg := ner.DefaultConfig()
+cfg.Segmentation = ner.SegmentFields // tab-delimited query output
+```
+
+Measured on a corpus of generated `psql`/log output plus a real 28-column
+capture (286 planted names). Cost is inference calls: finer segmentation means
+more, shorter sequences.
+
+The default stays `SegmentWhole` because prose is the common case and finer
+segmentation cannot help it — a segment boundary is a hard context boundary, so
+an entity is never read across one, and `"Alice Johnson met Bob Miller in
+Paris"` scores identically either way. Callers streaming query results or logs
+should set `SegmentLines`, and `SegmentFields` when the output is
+tab-delimited and recall matters more than throughput. Only tab is treated as
+a field delimiter: comma and pipe occur inside names and prose, so cutting on
+them would fragment the free text this engine is mainly used on.
+
+Segmentation composes with windowing rather than replacing it — a segment
+longer than the token budget is still split into overlapping windows, so no
+input is truncated under any setting, and byte offsets survive the extra
+rebase (window → segment → text).
+
 ### Running NER without internet access
 
 By default `ner.New` downloads the model on first use — ~250 MiB from

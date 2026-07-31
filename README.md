@@ -279,6 +279,11 @@ Design notes:
 - **Byte offsets, guaranteed.** Model spans are mapped back to byte offsets
   in the original text, so `text[r.Start:r.End] == r.Text` holds for NER
   results too, including multi-byte input.
+- **Whole words, guaranteed.** The model classifies subword tokens and can
+  tag only part of one — `Luan` comes back as `Lu` + `an`, each with its own
+  score, so a threshold can accept one half and leak the other. Spans are
+  grown to the word they sit inside and same-type spans that then touch are
+  unioned, so a caller never has to mask half a name.
 
 ### Running NER without internet access
 

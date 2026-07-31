@@ -11,7 +11,7 @@ import (
 func UKNHS() analyzer.Recognizer {
 	return analyzer.NewPatternRecognizer(
 		"UkNhsRecognizer", entities.UKNHS, "en",
-		[]*analyzer.Pattern{analyzer.MustPattern("NHS Number", `\b\d{3}\s?\d{3}\s?\d{4}\b`, 0.6)},
+		[]*analyzer.Pattern{analyzer.MustPattern("NHS Number", `\b\d{3}`+hsp+`?\d{3}`+hsp+`?\d{4}\b`, 0.6)},
 	).WithContext("nhs", "health").WithValidator(validateNHS)
 }
 
@@ -37,7 +37,7 @@ func UKNINO() analyzer.Recognizer {
 	return analyzer.NewPatternRecognizer(
 		"UkNinoRecognizer", entities.UKNINO, "en",
 		[]*analyzer.Pattern{analyzer.MustPattern("NINO",
-			`\b[A-CEGHJ-PR-TW-Z][A-CEGHJ-NPR-TW-Z]\s?\d{2}\s?\d{2}\s?\d{2}\s?[A-D]\b`, 0.7)},
+			`\b[A-CEGHJ-PR-TW-Z][A-CEGHJ-NPR-TW-Z]`+hsp+`?\d{2}`+hsp+`?\d{2}`+hsp+`?\d{2}`+hsp+`?[A-D]\b`, 0.7)},
 	).WithContext("nino", "national insurance").WithValidator(validateNINO)
 }
 

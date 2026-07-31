@@ -37,9 +37,17 @@
 // library at runtime (on macOS, "brew install onnxruntime" is found
 // automatically; elsewhere set Config.ORTLibraryPath). Selecting a backend
 // that is not compiled in makes New fail with an error saying which build
-// tag is missing, so a pure-Go binary degrades loudly, not silently. The
-// whole pipeline — windowing, batching, span merging — behaves identically
-// on every backend.
+// tag is missing, so a pure-Go binary degrades loudly, not silently.
+//
+// Everything this package does around the model — windowing, batching,
+// fold-offset remapping, span merging and word snapping — is backend
+// independent, and the spans it returns satisfy the same guarantees on every
+// backend. The model's own tokenization does not: hugot's pure-Go tokenizer
+// decodes each token id in isolation, which erases the WordPiece "##" marker
+// and leaves its subword detection permanently false, so the upstream
+// word-aggregating strategies are inert under BackendGo. That is why
+// snapToWords (words.go) is applied unconditionally rather than delegated to
+// the pipeline; see its doc comment.
 //
 // # Getting the model
 //
@@ -314,6 +322,10 @@ func (e *Engine) ProcessText(text, language string) (*analyzer.NlpArtifacts, err
 // the model's token limit is split further into overlapping windows (see
 // windows.go), whose spans are merged. Entities anywhere in a text of any
 // length are detected; nothing is truncated away under any setting.
+//
+// Spans are reported on word boundaries: the model tags subword tokens and
+// can hand back half of one, so every span is grown to the word it sits
+// inside and same-type spans that then touch are unioned (see words.go).
 func (e *Engine) ProcessTexts(texts []string, language string) ([]*analyzer.NlpArtifacts, error) {
 	if len(texts) == 0 {
 		return nil, nil
@@ -388,11 +400,14 @@ func (e *Engine) ProcessTexts(texts []string, language string) ([]*analyzer.NlpA
 	}
 
 	// Overlapping windows can report the same entity twice; texts whose
-	// segments each fit one window need no merge.
+	// segments each fit one window need no merge. Word snapping applies to
+	// every text: the model splits words into subword tokens and can tag only
+	// part of one.
 	for i, a := range artifacts {
 		if windowed[i] {
 			a.Ents = mergeSpans(a.Ents)
 		}
+		a.Ents = snapToWords(texts[i], a.Ents)
 	}
 	return artifacts, nil
 }

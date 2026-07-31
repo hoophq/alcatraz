@@ -159,7 +159,7 @@ module's model-backed recognizer.)
 ## How it works
 
 ```
-text  →  recognizers (regex)  →  validators (checksum)  →  dedup  →  threshold + allow list  →  results
+text  →  recognizers (regex)  →  validators (checksum)  →  context scoring  →  dedup  →  threshold + allow list  →  results
 ```
 
 The pipeline:
@@ -167,11 +167,61 @@ The pipeline:
 1. Every applicable recognizer runs its regexes over the text.
 2. A matched span is scored at the pattern's base confidence; a validator then
    either promotes it to `1.0` (verified) or drops it (failed checksum).
-3. Overlapping spans **of the same entity type** are de-duplicated (the
+3. A match supported by the words around it is boosted — see
+   [context-aware scoring](#context-aware-scoring).
+4. Overlapping spans **of the same entity type** are de-duplicated (the
    enclosing/higher-scoring span wins). Different entity types never suppress
    each other.
-4. An optional score threshold and allow list are applied.
-5. Each surviving result is annotated with the matched substring (`Result.Text`).
+5. An optional score threshold and allow list are applied.
+6. Each surviving result is annotated with the matched substring (`Result.Text`).
+
+---
+
+## Context-aware scoring
+
+A regex cannot tell a card number in a payment form from the same digits in a
+log line, so most patterns are scored well below certainty. The words around a
+match carry that missing evidence, and each recognizer declares the ones that
+matter:
+
+```go
+recognizers.Email() // base score 0.5, context words "email", "mail"
+```
+
+When one of them appears in the five words before a match, the score rises by
+`0.35` (floor `0.4`, capped at `1.0`) — Presidio's `LemmaContextAwareEnhancer`
+numbers:
+
+```go
+eng.Analyze("jane@example.com", alcatraz.Options{})        // EMAIL_ADDRESS 0.50
+eng.Analyze("email: jane@example.com", alcatraz.Options{}) // EMAIL_ADDRESS 0.85
+```
+
+This is why a threshold above `0.5` is worth setting: without context scoring
+a pattern-only `EMAIL_ADDRESS` could never exceed its base score, so such a
+threshold would quietly match nothing.
+
+Matching is case-insensitive and by **whole word**, with English plurals folded
+in (`cards` supports a `card` context, `addresses` supports `address`).
+Presidio instead asks whether the context word occurs anywhere inside a token,
+which fires on unrelated words — `ip` is inside `recipient`, `zip` and
+`script`. Multi-word entries (`"social security"`, `"codice fiscale"`) are
+matched as consecutive words. No NLP backend is required: the words are read
+straight from the text, so this works in the pattern-only engine.
+
+Scores already at `1.0` — anything a checksum validator verified — are left
+alone. Tune or switch off the behaviour per engine:
+
+```go
+eng.SetContextEnhancer(nil) // score purely on the pattern
+
+enh := analyzer.NewWordContextEnhancer()
+enh.WordsAfter = 3          // Presidio reads none; labels usually precede values
+eng.SetContextEnhancer(enh)
+```
+
+Your own recognizers get the same treatment — see
+[Make it yours](#make-it-yours).
 
 ---
 
@@ -225,6 +275,9 @@ reg.Add("en", analyzer.NewPatternRecognizer(
 
 eng := analyzer.NewEngine(reg, []string{"en"})
 ```
+
+`WithContext("employee", "emp id", "staff")` declares the words that support
+the match — see [context-aware scoring](#context-aware-scoring).
 
 The `Recognizer` interface is the seam for statistical backends too; nothing
 in the framework assumes regex. The `alcatraz/ner` module (below) plugs in
@@ -597,6 +650,10 @@ makes it precise on structured identifiers and honest about the rest:
 - **The default threshold is 0.** Some recognizers are intentionally
   low-confidence (e.g. `US_BANK_NUMBER` at 0.05 for any 8–17 digit run). Set
   `Options.Threshold` to trade recall for precision.
+- **Scores are relative, not calibrated.** A base score says how much the
+  pattern alone is worth; [context](#context-aware-scoring) adds a fixed
+  `0.35` when the surrounding words agree. Neither is a probability — pick a
+  threshold by measuring on your own text, not by reading the number.
 - **Recall over locale-perfection.** Patterns favor catching real identifiers
   over locale-perfect validation of every edge case.
 
@@ -643,9 +700,9 @@ Numbers vary by machine — reproduce them with two commands per engine; see
       same pattern as `lookaround`; one shared inference pass per `Analyze`
 - [x] `pfilter` module — privacy-filter.cpp (GGML) backend: PII-specialized
       models, long documents, GPU; purego FFI, no cgo
-- [ ] Context-word score boosting (raise a match's confidence when related
-      words appear near the span — the shared `NlpArtifacts` tokens are the
-      input for this)
+- [x] Context-word score boosting — Presidio's +0.35 within five words, whole
+      word rather than substring, no NLP backend required (lemmas still to
+      come, once the NLP seam carries tokens)
 - [ ] Zero-shot PII models (GLiNER-class): user-defined entity types at
       runtime, no retraining
 - [ ] Optional LLM-backed detection/validation — separate module, explicit
@@ -660,8 +717,9 @@ See [TODO.md](TODO.md) for the detailed plan.
 alcatraz.go        Public entry point: NewEngine + re-exported types.
 entities/          Canonical entity-type identifier constants.
 analyzer/          Framework: Result, dedup, Recognizer, Pattern, Matcher,
-                   PatternRecognizer, Registry, Engine, allow list, and the
-                   NLP seam (NlpEngine, NlpArtifacts, ArtifactRecognizer).
+                   PatternRecognizer, Registry, Engine, allow list,
+                   context-aware scoring (ContextEnhancer), and the NLP seam
+                   (NlpEngine, NlpArtifacts, ArtifactRecognizer).
 anonymizer/        Mask/replace/redact detected spans (Operator, Config).
 recognizers/       The 45 built-in recognizers, checksum helpers, loader.
 models/            Pinned model manifests and checksum-verified downloads for

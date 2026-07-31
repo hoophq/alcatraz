@@ -36,10 +36,15 @@ func NewPatternRecognizer(name, entity, language string, patterns []*Pattern) *P
 	}
 }
 
-// WithContext attaches context words that hint at the entity nearby. They are
-// retained for future context-aware scoring (which requires an NLP backend)
-// and are inert in the pattern-only engine. Returns the recognizer for
-// chaining.
+// WithContext attaches words that hint at this entity when they appear near a
+// match — the labels a value is usually written under ("ssn", "codice
+// fiscale"). The engine's ContextEnhancer raises a result's score when one of
+// them is in the surrounding words, so a pattern too weak to trust on its own
+// reaches a usable score in text that agrees with it. Matching is
+// case-insensitive and by whole word, so multi-word entries are matched as
+// phrases. No NLP backend is required.
+//
+// Returns the recognizer for chaining.
 func (pr *PatternRecognizer) WithContext(words ...string) *PatternRecognizer {
 	pr.context = words
 	return pr

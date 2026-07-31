@@ -87,11 +87,17 @@ lives in a **separate module** so importers of the core never pull the dep.
 
 ## Context-aware scoring (precision follow-up)
 
-- [ ] Activate the currently-inert context words: `PatternRecognizer.WithContext`
-      stores words but does nothing. Implement context-based score boosting
-      fed from the shared `NlpArtifacts.Tokens` (Presidio boosts +0.35 when a
-      recognizer's context words appear near the span; plain lowercase token
-      matching is a fine v1, lemmas later).
+- [x] Activate the previously-inert context words: `analyzer.ContextEnhancer`
+      + the default `WordContextEnhancer`, installed by `NewEngine` and
+      swappable via `Engine.SetContextEnhancer`. Presidio's numbers (+0.35,
+      floor 0.4, five words before, capped at `MaxScore`), fed by a built-in
+      word scanner over the raw text rather than `NlpArtifacts.Tokens` — so
+      the pattern-only engine, the one with no model to fall back on, gets
+      the boost too. Matching is whole word with an English plural fold, not
+      Presidio's substring test (which fires on "ip" inside "recipient").
+- [ ] Lemma-based context matching, replacing the plural fold, once
+      `NlpArtifacts.Tokens` carries lemmas. `WordContextEnhancer.Enhance`
+      already receives the artifacts and ignores them.
 - [ ] Populate `NlpArtifacts.Tokens` in the `ner` module (hugot's aggregated
       output currently yields entity spans only).
 - [ ] Cross-recognizer overlap handling: `analyzer.RemoveDuplicates` only

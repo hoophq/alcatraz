@@ -28,15 +28,20 @@ type Engine struct {
 	threshold float64
 	languages []string
 	nlp       NlpEngine
+	context   ContextEnhancer
 }
 
 // NewEngine builds an engine over the given registry. languages records the
 // engine's configured languages for reference; analysis language is chosen per
 // call via Options.
+//
+// Context-aware scoring is on by default (see SetContextEnhancer), matching
+// Presidio.
 func NewEngine(registry *Registry, languages []string) *Engine {
 	return &Engine{
 		registry:  registry,
 		languages: append([]string(nil), languages...),
+		context:   NewWordContextEnhancer(),
 	}
 }
 
@@ -50,6 +55,13 @@ func (e *Engine) SetThreshold(t float64) { e.threshold = t }
 // recognizer. Without it, ArtifactRecognizers fall back to their plain
 // Analyze method. Call during setup, before the engine is used concurrently.
 func (e *Engine) SetNlpEngine(n NlpEngine) { e.nlp = n }
+
+// SetContextEnhancer replaces the context-aware score enhancer, which raises
+// a result's score when a word the recognizer declared via WithContext appears
+// near the match. NewEngine installs NewWordContextEnhancer; pass nil to score
+// purely on the pattern. Call during setup, before the engine is used
+// concurrently.
+func (e *Engine) SetContextEnhancer(c ContextEnhancer) { e.context = c }
 
 // Languages returns the engine's configured languages.
 func (e *Engine) Languages() []string { return append([]string(nil), e.languages...) }
@@ -144,6 +156,13 @@ func (e *Engine) analyzeWithArtifacts(text string, o Options, recs []Recognizer,
 			continue
 		}
 		all = append(all, rec.Analyze(text, o.Entities)...)
+	}
+
+	// Before de-duplication and the threshold, both of which decide what to
+	// keep by score: a boost can settle which of two overlapping spans wins,
+	// and a result boosted past the threshold has to survive to be seen.
+	if e.context != nil {
+		all = e.context.Enhance(text, all, recs, artifacts)
 	}
 
 	results := RemoveDuplicates(all)

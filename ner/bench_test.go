@@ -6,6 +6,9 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/hoophq/alcatraz/analyzer"
+	"github.com/hoophq/alcatraz/entities"
 )
 
 // BenchmarkLiveProcessTexts measures end-to-end batched inference throughput
@@ -64,5 +67,25 @@ func BenchmarkLiveProcessTexts(b *testing.B) {
 		if _, err := nlp.ProcessTexts(texts, "en"); err != nil {
 			b.Fatalf("ProcessTexts: %v", err)
 		}
+	}
+}
+
+// BenchmarkSnapToWordsOpaqueBlob pins the cost of snapping a span stranded
+// inside a long run of word runes — a base64 payload or an opaque identifier,
+// where there is no word boundary to find. wordBounds gives up after
+// maxWordChars runes, so the time is a function of the cap and not of the
+// blob: walking to the ends of a 4 MiB run first cost 17ms per span, against
+// under a microsecond now. Needs no model, so it runs unconditionally.
+func BenchmarkSnapToWordsOpaqueBlob(b *testing.B) {
+	text := strings.Repeat("a", 4<<20)
+	span := analyzer.NerSpan{EntityType: entities.Person, Start: 1000, End: 1010, Score: 0.9}
+	// snapToWords writes through its input slice, so each iteration needs a
+	// fresh copy or it would measure the second pass over a snapped span.
+	spans := make([]analyzer.NerSpan, 1)
+	b.ReportAllocs()
+	for b.Loop() {
+		spans = spans[:1]
+		spans[0] = span
+		snapToWords(text, spans)
 	}
 }

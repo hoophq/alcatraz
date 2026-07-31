@@ -22,37 +22,57 @@ const maxWordChars = 100
 
 // wordRune reports whether r can appear inside a tokenizer word.
 //
-// Letters and digits only. '_' and '-' are deliberately excluded: BERT's
-// pre-tokenizer splits on punctuation, so `user_name` and `Jean-Pierre` are
-// several words to the model, and treating them as one would let a span over
-// `name` swallow `user_`, or a span over one half of a hyphenated name swallow
-// the other half the model deliberately left untagged.
-func wordRune(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }
-
-// wordStart returns the first byte of the maximal run of word runes ending at
-// byte offset i, which is i itself when the preceding rune is not a word rune.
-func wordStart(s string, i int) int {
-	for i > 0 {
-		r, n := utf8.DecodeLastRuneInString(s[:i])
-		if !wordRune(r) {
-			break
-		}
-		i -= n
-	}
-	return i
+// Letters, digits and combining marks. A mark belongs to the letter it sits
+// on: decomposed text reaches us from macOS exports and database dumps that
+// never normalized, and foldASCII renders one byte per rune, so the model
+// sees "n" and "x" where the text holds "n" + U+0301 and can tag the base
+// letter alone. Counting the mark as a boundary would end the span between a
+// letter and its own accent — masking NFD "Zieliński" then yields
+// "<PERSON>́ski", the leak this file exists to close.
+//
+// '_' and '-' are deliberately excluded: BERT's pre-tokenizer splits on
+// punctuation, so `user_name` and `Jean-Pierre` are several words to the
+// model, and treating them as one would let a span over `name` swallow
+// `user_`, or a span over one half of a hyphenated name swallow the other
+// half the model deliberately left untagged.
+func wordRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.Is(unicode.M, r)
 }
 
-// wordEnd returns the byte just past the maximal run of word runes starting at
-// byte offset i, which is i itself when the rune at i is not a word rune.
-func wordEnd(s string, i int) int {
-	for i < len(s) {
-		r, n := utf8.DecodeRuneInString(s[i:])
+// wordBounds returns the maximal run of word runes spanning byte offset i:
+// the word runes immediately before i, and those from i onwards. Either half
+// may be empty, so a run of one word rune, or none at all, is a normal answer.
+//
+// ok is false when the run holds more than maxWordChars runes. That verdict
+// is reached after walking at most maxWordChars+1 of them, so the cost is
+// bounded by the cap rather than by the length of the run — a stray span
+// inside a megabyte-long base64 blob is refused without reading the blob.
+func wordBounds(s string, i int) (start, end int, ok bool) {
+	budget := maxWordChars
+	start, end = i, i
+	for start > 0 {
+		r, n := utf8.DecodeLastRuneInString(s[:start])
 		if !wordRune(r) {
 			break
 		}
-		i += n
+		if budget == 0 {
+			return i, i, false
+		}
+		budget--
+		start -= n
 	}
-	return i
+	for end < len(s) {
+		r, n := utf8.DecodeRuneInString(s[end:])
+		if !wordRune(r) {
+			break
+		}
+		if budget == 0 {
+			return i, i, false
+		}
+		budget--
+		end += n
+	}
+	return start, end, true
 }
 
 // snapToWords grows every span out to the word boundaries it sits inside and
@@ -93,19 +113,17 @@ func snapToWords(text string, spans []analyzer.NerSpan) []analyzer.NerSpan {
 			continue // malformed; leave it exactly as it is
 		}
 		// Only grow an edge that is genuinely mid-word: the rune inside the
-		// span and the rune outside it must both be word runes.
+		// span and the rune outside it must both be word runes. The guards
+		// establish the inside rune — without them a span ending just after a
+		// space would grow forward into the next word.
 		if first, _ := utf8.DecodeRuneInString(text[s.Start:]); wordRune(first) {
-			if start := wordStart(text, s.Start); start != s.Start {
-				if run := text[start:wordEnd(text, s.Start)]; utf8.RuneCountInString(run) <= maxWordChars {
-					s.Start = start
-				}
+			if start, _, ok := wordBounds(text, s.Start); ok {
+				s.Start = start
 			}
 		}
 		if last, _ := utf8.DecodeLastRuneInString(text[:s.End]); wordRune(last) {
-			if end := wordEnd(text, s.End); end != s.End {
-				if run := text[wordStart(text, s.End):end]; utf8.RuneCountInString(run) <= maxWordChars {
-					s.End = end
-				}
+			if _, end, ok := wordBounds(text, s.End); ok {
+				s.End = end
 			}
 		}
 	}

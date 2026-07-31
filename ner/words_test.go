@@ -131,6 +131,25 @@ func TestSnapToWords(t *testing.T) {
 		spans: []analyzer.NerSpan{person(0, 3, 0.9)},
 		want:  []string{"PERSON:417768"},
 	}, {
+		// Decomposed "Zieliński": the "ń" is "n" + U+0301, so [0:6] ends
+		// between the letter and its own accent. A combining mark is part of
+		// its word, so the span grows past it — otherwise masking yields
+		// "<PERSON>\u0301ski", the accent floating outside the mask and "ski"
+		// left in the clear. This is not a hypothetical input: foldASCII
+		// renders one byte per rune, so the model sees "Zielinxski" and can
+		// tag "Zielin" on its own.
+		name:  "combining mark is part of the word",
+		text:  "Zielin\u0301ski",
+		spans: []analyzer.NerSpan{person(0, 6, 0.9)},
+		want:  []string{"PERSON:Zielin\u0301ski"},
+	}, {
+		// The same shape at the other edge: [8:11] is "ski", and growing it
+		// leftwards must cross the mark rather than strand "Zielin".
+		name:  "combining mark is crossed leftwards",
+		text:  "Zielin\u0301ski",
+		spans: []analyzer.NerSpan{person(8, 11, 0.9)},
+		want:  []string{"PERSON:Zielin\u0301ski"},
+	}, {
 		name:  "no spans",
 		text:  "nothing here",
 		spans: nil,

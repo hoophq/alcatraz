@@ -294,9 +294,21 @@ id      org_id  connection  ...  user_email       user_name  user_email     ...
 ```
 
 `PERSON "Luan"` is found instantly on its own. As one blob, three rows of it
-yield **nothing**. The fix is not a better model — it is to stop asking the
-model to read the table as a sentence. `ner.Config.Segmentation` chooses what
-counts as one sequence:
+yield **nothing**. Ablating that input shows where the damage comes from:
+
+| Input | Names found |
+|---|---|
+| header + 3 rows | 0/3 |
+| 3 rows, no header | 2/3 |
+| 1 row alone | 1/1 |
+
+A tab-separated header is the worst single thing in there — 28 column names in
+a row is a sequence the model has no reading of, and it drags the rows after it
+down with it. Cross-row context costs the rest.
+
+The fix is not a better model — it is to stop asking the model to read the
+table as a sentence. `ner.Config.Segmentation` chooses what counts as one
+sequence:
 
 | Value | Cuts after | Recall | Cost |
 |---|---|---|---|

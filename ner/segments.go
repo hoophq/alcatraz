@@ -18,6 +18,18 @@ package ner
 // Cutting on the delimiters the output already has removes that noise without
 // inventing any structure the caller has to describe.
 //
+// Ablating the reproduction fixture (three psql rows, one name each) shows
+// how much of that noise is which, under SegmentWhole:
+//
+//	header + 3 rows   0/3
+//	3 rows, no header 2/3
+//	1 row alone       1/1
+//
+// A tab-separated header is the single worst thing in the input — 28 column
+// names in a row is a sequence the model has no reading of, and it drags the
+// rows after it down with it. Cross-row context costs the rest. Segmentation
+// removes both, because both are context that was never really context.
+//
 // Segments partition the folded text: disjoint, in order, covering every
 // byte. That is what lets a window offset inside a segment be rebased onto
 // the text by adding the segment start, and it means concatenating the

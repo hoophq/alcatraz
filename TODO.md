@@ -36,23 +36,24 @@ lives in a **separate module** so importers of the core never pull the dep.
 - [ ] Upstream: go-huggingface `hftokenizer` BertNormalizer builds its
       normalized→original offset table with one entry per **rune** instead of
       per **byte**, shifting all subsequent token spans on multi-byte input.
-      File an issue/PR; once fixed upstream the ASCII-fold workaround can be
-      retired.
+      Still present in v0.4.1 (re-checked 2026-08-04: on "José Álvarez went to
+      São Paulo" the spans drift token by token and the last one runs past the
+      end of the string). File an issue/PR; once fixed upstream the ASCII-fold
+      workaround can be retired.
 - [x] Word-boundary guarantee: spans are grown to the word they sit inside and
       same-type spans that then touch are unioned, so a subword split never
       reaches a caller as half a name (`ner/words.go`).
-- [ ] Upstream: hugot `getGoTokens` (`backends/tokenizer_go.go`) decodes each
-      token id on its own, so the WordPiece decoder strips the `##` marker
-      before `gatherPreEntities` compares token length to the source slice.
-      `isSubword` is therefore always false on `BackendGo` and every
-      word-aggregating strategy (FIRST/MAX/AVERAGE) is inert there — all four
-      strategies return byte-identical output, silently. The Rust tokenizer
-      path does not go through `getGoTokens` and keeps the marker. Reported as
+- [x] Upstream, fixed: hugot `getGoTokens` (`backends/tokenizer_go.go`) decoded
+      each token id on its own, so the WordPiece decoder stripped the `##`
+      marker before `gatherPreEntities` compared token length to the source
+      slice. `isSubword` was therefore always false on `BackendGo` and every
+      word-aggregating strategy (FIRST/MAX/AVERAGE) was inert there — all four
+      returned byte-identical output, silently. Reported as
       [knights-analytics/hugot#136](https://github.com/knights-analytics/hugot/issues/136)
-      (fix: decode the batch in one call, or keep the raw tokens alongside the
-      ids); nothing here waits on it. Independently, SIMPLE aggregation never
-      consults `isSubword` at all and splits on every `B-` tag, so
-      `ner/words.go` stays either way.
+      and fixed in **v0.7.7** (`getGoTokens` now resolves ids via `IDToToken`);
+      verified here 2026-08-04, the strategies produce distinct output again.
+      `ner/words.go` stays regardless: SIMPLE aggregation never consults
+      `isSubword` at all and splits on every `B-` tag.
 - [x] `pfilter` module (separate module): privacy-filter.cpp backend over
       purego FFI (no cgo — cross-compiles everywhere; the dlopen path builds
       on 64-bit darwin/linux, everything else gets a clean "unsupported" stub).

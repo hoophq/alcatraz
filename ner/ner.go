@@ -42,12 +42,10 @@
 // Everything this package does around the model — windowing, batching,
 // fold-offset remapping, span merging and word snapping — is backend
 // independent, and the spans it returns satisfy the same guarantees on every
-// backend. The model's own tokenization does not: hugot's pure-Go tokenizer
-// decodes each token id in isolation, which erases the WordPiece "##" marker
-// and leaves its subword detection permanently false, so the upstream
-// word-aggregating strategies are inert under BackendGo. That is why
-// snapToWords (words.go) is applied unconditionally rather than delegated to
-// the pipeline; see its doc comment.
+// backend. Word snapping in particular is not delegated to the pipeline: the
+// SIMPLE aggregation configured below opens a new group at every B- tag, so it
+// hands back subword fragments whatever the backend. See snapToWords
+// (words.go) for why that is not acceptable at the API boundary.
 //
 // # Getting the model
 //

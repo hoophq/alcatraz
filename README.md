@@ -301,7 +301,7 @@ libraries. (For maximum throughput, including GPU, see
 [Faster inference](#faster-inference-ort-xla-and-gpu) below.)
 
 ```bash
-go get github.com/hoophq/alcatraz/ner   # requires Go 1.26+
+go get github.com/hoophq/alcatraz/ner   # requires Go 1.26.5+ (the core needs only 1.24)
 ```
 
 ```go

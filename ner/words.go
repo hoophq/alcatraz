@@ -92,12 +92,13 @@ func wordBounds(s string, i int) (start, end int, ok bool) {
 // Mid-word spans arise because the model tags WordPiece tokens, not words, and
 // hugot's SIMPLE aggregation starts a new group at every B- tag — so a name
 // split into "Lu" + "##an" and tagged B-PER twice comes back as two entities.
-// The word-aggregating strategies (FIRST/MAX/AVERAGE) exist upstream to solve
-// exactly this, but they are inert on the pure-Go backend: see the note on
-// Config.Backend. Snapping here is not a substitute for that. It is a property
-// of what this package promises its callers — byte spans over their text, on
-// value boundaries — and it holds on every backend, including the ones where
-// the upstream aggregation works.
+// The word-aggregating strategies (FIRST/MAX/AVERAGE) address that upstream.
+// They were inert on the pure-Go backend until hugot v0.7.7, which fixed the
+// subword detection they depend on (knights-analytics/hugot#136). Snapping is
+// not a substitute for them: it is a property of what this package promises
+// its callers — byte spans over their text, on value boundaries — and it holds
+// under any strategy, including the SIMPLE one configured here, which never
+// consults subword information at all.
 //
 // Growth is bounded at maxWordChars per edge and never crosses a non-word
 // rune, so a span can only ever expand within the single word it was already

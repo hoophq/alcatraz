@@ -4,3 +4,10 @@
 # Local native libraries for ORT builds of the ner module (libtokenizers.a,
 # libonnxruntime); never committed.
 /.tmp-ort/
+
+# MkDocs build output (`mkdocs build`, `mkdocs serve`); the site is published
+# by .github/workflows/docs.yml, never committed.
+/site/
+
+# `go build ./cmd/alcatraz` drops the binary here.
+/alcatraz

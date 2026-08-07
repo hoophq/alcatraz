@@ -1,7 +1,3 @@
-// Package recognizers provides the built-in alcatraz entity recognizers and a
-// loader that registers them by language. Each recognizer is a
-// analyzer.PatternRecognizer: one or more regexes plus, for structured
-// entities, a checksum/format validator.
 package recognizers
 
 import "strings"

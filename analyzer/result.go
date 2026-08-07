@@ -1,12 +1,3 @@
-// Package analyzer is the detection framework for alcatraz: the recognizer
-// contract, regex pattern recognizers, the registry and the engine that runs
-// them. It is pure Go and dependency-free.
-//
-// The framework is deliberately separate from the concrete recognizers (which
-// live in the recognizers package) so callers can build a custom engine with
-// only the recognizers they want, or add their own via the Recognizer
-// interface. Most callers should use the top-level alcatraz package, which
-// wires the framework together with the full default recognizer set.
 package analyzer
 
 import "sort"

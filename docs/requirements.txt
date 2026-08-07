@@ -1,0 +1,5 @@
+# Documentation site toolchain. Pinned so a CI build and a local preview
+# render identically; bump deliberately.
+mkdocs==1.6.1
+mkdocs-material==9.5.49
+mkdocs-callouts==1.16.0

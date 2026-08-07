@@ -1,22 +1,3 @@
-// Package anonymizer replaces detected PII spans in text, turning the
-// analyzer's []Result into a sanitized string:
-//
-//	results := eng.Analyze(text, alcatraz.Options{})
-//	safe := anonymizer.Anonymize(text, results, anonymizer.Mask('*'))
-//
-// Operators decide what each span becomes: Mask keeps the span's length
-// using a chosen character ('#', '*', …), MaskKeepLast leaves a recognizable
-// tail (last 4 card digits), Replace emits "<ENTITY_TYPE>" placeholders,
-// ReplaceWith a fixed string, and Redact removes the span. An Operator is
-// just a func, so custom transforms (hashing, encryption, tokenization) drop
-// in the same way. Per-entity operators are configured via Config.
-//
-// Overlapping spans are resolved safely: higher-scoring spans keep their
-// full extent and lower-scoring ones are trimmed to the uncovered remainder,
-// so every detected byte is anonymized exactly once — a partial overlap
-// never leaks the uncovered part of a detection.
-//
-// Like the rest of the core, this package is pure Go and dependency-free.
 package anonymizer
 
 import (

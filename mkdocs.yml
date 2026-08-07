@@ -1,0 +1,97 @@
+site_name: Alcatraz
+site_description: PII detection for Go. In-process, dependency-free.
+site_url: https://hoophq.github.io/alcatraz/
+repo_url: https://github.com/hoophq/alcatraz
+repo_name: hoophq/alcatraz
+edit_uri: edit/main/docs/
+copyright: Built by the team behind hoop.dev
+
+theme:
+  name: material
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.instant
+    - navigation.tracking
+    - content.code.copy
+    - content.action.edit
+    - search.suggest
+    - search.highlight
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: blue grey
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: blue grey
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Install & quickstart: install.md
+      - The CLI: cli.md
+      - What it detects: entities.md
+  - Guide:
+      - How it works: how-it-works.md
+      - Context-aware scoring: context-scoring.md
+      - Anonymize: anonymize.md
+      - Custom recognizers: custom-recognizers.md
+      - Lookahead & lookbehind: lookaround.md
+  - ML backends:
+      - Statistical NER: ner.md
+      - Offline models: ner-offline.md
+      - Inference backends: ner-backends.md
+      - pfilter: pfilter.md
+  - Reference:
+      - Design & limits: design.md
+      - Benchmarks: benchmarks.md
+      - Tests & CI: testing.md
+      - API (pkg.go.dev): https://pkg.go.dev/github.com/hoophq/alcatraz
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+
+# --strict promotes these to build failures, so a renamed page or a dead
+# in-page anchor breaks the PR that caused it rather than the live site.
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn
+
+plugins:
+  - search
+  # Renders GitHub's "> [!NOTE]" blockquote callouts as Material admonitions,
+  # so the same Markdown reads correctly on github.com and on the site.
+  - callouts
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/hoophq/alcatraz
+    - icon: fontawesome/solid/globe
+      link: https://hoop.dev

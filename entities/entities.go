@@ -1,7 +1,3 @@
-// Package entities defines the canonical entity-type identifiers alcatraz can
-// detect. The names follow the widely used SCREAMING_SNAKE_CASE convention for
-// PII entity types so reports and downstream severity maps stay compatible
-// across implementations.
 package entities
 
 // Generic entities (language-independent).

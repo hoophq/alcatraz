@@ -1,19 +1,3 @@
-// Package alcatraz is a pure-Go, dependency-free, pattern-based PII
-// detection library.
-//
-// It is meant to be imported and invoked in-process — no service, no network:
-//
-//	eng := alcatraz.NewEngine()
-//	for _, hit := range eng.Analyze("email me at jane@example.com", alcatraz.Options{}) {
-//		fmt.Println(hit.EntityType, hit.Text, hit.Score)
-//	}
-//
-// Detection in this package is pattern-based (regular expressions plus
-// checksum/format validators). Free-text entities that require a statistical
-// model — PERSON, LOCATION, NRP — are provided by the optional
-// github.com/hoophq/alcatraz/ner module, which plugs in through the
-// Recognizer and NlpEngine interfaces in the analyzer subpackage; the core
-// stays dependency-free.
 package alcatraz
 
 import (

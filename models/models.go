@@ -1,15 +1,3 @@
-// Package models materialises the model files alcatraz's optional NER
-// backends need, pinned to an immutable revision and verified against
-// recorded sha256 digests and byte lengths.
-//
-// It lives in the root module rather than in ner on purpose. The alcatraz
-// CLI ships "alcatraz models download" so a model can be fetched as a build
-// or deploy step, and that command must not drag the ONNX model runtime —
-// nor its newer Go requirement — into a module that is otherwise standard
-// library only. Nothing here imports anything outside the standard library.
-//
-// The ner package re-exports EnsureModel, EnsureModelIn, VerifyModelIn,
-// DefaultDir and PinnedModels, so NER users still have a single import.
 package models
 
 import (

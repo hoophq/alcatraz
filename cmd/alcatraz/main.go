@@ -1,25 +1,3 @@
-// Command alcatraz scans files, stdin text, or a unified diff for PII and
-// secrets using the alcatraz library — entirely in-process, no service, no
-// network calls.
-//
-// Usage:
-//
-//	alcatraz scan [flags] [path ...]   scan files line by line (no paths: read stdin)
-//	alcatraz diff [flags]              read a unified diff on stdin, scan added lines
-//	alcatraz hook <claude-post|claude-prompt> [flags]
-//	                                   Claude Code hook processors (see hook.go)
-//	alcatraz models download [flags]   fetch a verified NER model (see models.go)
-//	alcatraz version                   print the version
-//
-// Scanning is the network-free part, and it is the whole product: no
-// telemetry, no lookups, nothing leaves the process. "models download" is the
-// single exception, and it exists so a deployment can fetch the optional NER
-// model deliberately, from pinned URLs, instead of on first use.
-//
-// Exit codes: 0 = no findings, 1 = findings detected, 2 = error. Hook mode
-// always exits 0 — findings are handled via hook output, never exit codes.
-// Detected values are always masked in the output — the raw values never
-// leave the scan.
 package main
 
 import (

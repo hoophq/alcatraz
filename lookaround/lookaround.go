@@ -1,18 +1,3 @@
-// Package lookaround provides an alcatraz Matcher backed by a backtracking
-// regex engine (github.com/dlclark/regexp2). It enables patterns that use
-// lookahead and lookbehind — (?=…), (?!…), (?<=…), (?<!…) — plus backreferences,
-// which the standard-library RE2 engine that powers alcatraz's core does not
-// support.
-//
-// It lives in a separate module on purpose: importing it is the only way to
-// pull in regexp2, so alcatraz's core stays dependency-free and linear-time.
-// Use it for user-configured rules that genuinely need lookaround; prefer the
-// core (anchors + validators, or a capture group via Pattern.WithGroup) when
-// you can, because backtracking does not have RE2's linear-time guarantee.
-//
-// To bound catastrophic backtracking (ReDoS), every compiled matcher carries a
-// MatchTimeout (DefaultTimeout unless overridden). On timeout the affected
-// match is abandoned rather than allowed to run unbounded.
 package lookaround
 
 import (

@@ -73,11 +73,17 @@ const (
 
 // Brazil.
 const (
-	BRCPF  = "BR_CPF"
-	BRCNPJ = "BR_CNPJ"
-	BRRG   = "BR_RG"
-	BRCNH  = "BR_CNH"
-	BRPIS  = "BR_PIS" // also PASEP / NIS / NIT
+	BRCPF     = "BR_CPF"
+	BRCNPJ    = "BR_CNPJ"
+	BRRG      = "BR_RG"
+	BRCNH     = "BR_CNH"
+	BRPIS     = "BR_PIS" // also PASEP / NIS / NIT
+	BRCNS     = "BR_CNS" // Cartão Nacional de Saúde
+	BRTitulo  = "BR_TITULO_ELEITORAL"
+	BRRenavam = "BR_RENAVAM"
+	BRCEP     = "BR_CEP"
+	BRPlaca   = "BR_PLACA"
+	BRPixKey  = "BR_PIX_KEY"
 )
 
 // Other national identifiers.

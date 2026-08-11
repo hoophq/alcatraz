@@ -150,6 +150,25 @@ func TestValidators(t *testing.T) {
 			[]string{"12345678900"},
 			[]string{"12345678901", "00000000000"},
 		},
+		{
+			// Definitive cards (leading 1-2) carry a 000/001 control block; the
+			// third invalid corrupts that block while keeping the 15-digit
+			// weighted sum a multiple of 11, which a sum-only rule accepts.
+			"br_cns", validateBRCNS,
+			[]string{"297220185600003", "165969980860009", "823111431391203"},
+			[]string{"297220185600004", "397220185600003", "297220185600100"},
+		},
+		{
+			"br_titulo", validateBRTitulo,
+			[]string{"483917830248", "070923291295"},
+			// bad check digit, then an electoral region outside 01-28.
+			[]string{"483917830249", "483917839948"},
+		},
+		{
+			"br_renavam", validateBRRenavam,
+			[]string{"20193580815", "31974898449"},
+			[]string{"20193580816", "11111111111"},
+		},
 	}
 
 	for _, c := range cases {

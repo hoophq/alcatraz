@@ -14,7 +14,7 @@ confirm an identifier rather than matching its shape. Constants live in the
 | Italy | `IT_FISCAL_CODE`✓, `IT_VAT_CODE`✓, `IT_IDENTITY_CARD`, `IT_DRIVER_LICENSE`, `IT_PASSPORT` |
 | Spain | `ES_NIF`✓, `ES_NIE`✓ |
 | Singapore | `SG_FIN`✓, `SG_UEN` |
-| Brazil | `BR_CPF`✓, `BR_CNPJ`✓, `BR_RG`, `BR_CNH`✓, `BR_PIS`✓ |
+| Brazil | `BR_CPF`✓, `BR_CNPJ`✓, `BR_RG`, `BR_CNH`✓, `BR_PIS`✓, `BR_CNS`✓, `BR_TITULO_ELEITORAL`✓, `BR_RENAVAM`✓, `BR_CEP`, `BR_PLACA`, `BR_PIX_KEY` |
 | Other | `PL_PESEL`✓, `KR_RRN`✓, `FI_PERSONAL_IDENTITY_CODE`✓, `TH_TNIN`✓ |
 
 Every built-in detects a **language-independent** structured identifier: an

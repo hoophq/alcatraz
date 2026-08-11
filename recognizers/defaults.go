@@ -70,7 +70,11 @@ func singapore() []analyzer.Recognizer {
 }
 
 func brazil() []analyzer.Recognizer {
-	return []analyzer.Recognizer{BRCPF(), BRCNPJ(), BRRG(), BRCNH(), BRPIS()}
+	return []analyzer.Recognizer{
+		BRCPF(), BRCNPJ(), BRRG(), BRCNH(), BRPIS(),
+		BRCNS(), BRTitulo(), BRRenavam(),
+		BRCEP(), BRCEPUnformatted(), BRPlaca(), BRPixKey(),
+	}
 }
 
 func other() []analyzer.Recognizer {

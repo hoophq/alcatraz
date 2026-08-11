@@ -4,7 +4,7 @@
 
 ### PII detection for Go. In-process, dependency-free.
 
-Emails, credit cards, national IDs: **45 entity types across 12 countries**,
+Emails, credit cards, national IDs: **51 entity types across 12 countries**,
 detected with a function call. No service, no network, no models to download.
 
 [![CI](https://github.com/hoophq/alcatraz/actions/workflows/test.yml/badge.svg)](https://github.com/hoophq/alcatraz/actions/workflows/test.yml)
@@ -39,7 +39,7 @@ library you `go get` and invoke in-process.
 
 ## Why Alcatraz
 
-- ✅ **Checksum-verified.** 25 of the 45 recognizers carry a real checksum
+- ✅ **Checksum-verified.** 29 of the 52 recognizers carry a real checksum
   validator: Luhn (credit cards), ISO 7064 mod-97 (IBAN), Verhoeff (Aadhaar),
   the Brazilian mod-11 schemes (CPF, CNPJ, CNH, PIS), and more. A 16-digit
   number that fails Luhn is *dropped*, not flagged.
@@ -116,7 +116,7 @@ reference and Claude Code hook setup: **[docs/cli.md](docs/cli.md)**.
 |---|---|
 | Install, quickstart, engine reuse | [docs/install.md](docs/install.md) |
 | CLI flags, exit codes, hooks | [docs/cli.md](docs/cli.md) |
-| The 45 entity types | [docs/entities.md](docs/entities.md) |
+| The 51 entity types | [docs/entities.md](docs/entities.md) |
 | The detection pipeline | [docs/how-it-works.md](docs/how-it-works.md) |
 | Why a bare email scores 0.5 | [docs/context-scoring.md](docs/context-scoring.md) |
 | Mask, replace, redact | [docs/anonymize.md](docs/anonymize.md) |
@@ -147,7 +147,7 @@ analyzer/          Framework: Result, dedup, Recognizer, Pattern, Matcher,
                    context-aware scoring (ContextEnhancer), and the NLP seam
                    (NlpEngine, NlpArtifacts, ArtifactRecognizer).
 anonymizer/        Mask/replace/redact detected spans (Operator, Config).
-recognizers/       The 45 built-in recognizers, checksum helpers, loader.
+recognizers/       The 51 built-in recognizers, checksum helpers, loader.
 models/            Pinned model manifests and checksum-verified downloads for
                    the optional NER backends. In the root module, stdlib only,
                    so the CLI fetches models without the model runtime.

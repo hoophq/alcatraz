@@ -72,8 +72,8 @@ func ExampleAll() {
 	fmt.Println(len(recognizers.All()), "built-ins,", len(reg.Recognizers("pt", nil)), "registered")
 	fmt.Println(reg.SupportedEntities("pt"))
 	// Output:
-	// 45 built-ins, 6 registered
-	// [BR_CNH BR_CNPJ BR_CPF BR_PIS BR_RG EMAIL_ADDRESS]
+	// 52 built-ins, 13 registered
+	// [BR_CEP BR_CNH BR_CNPJ BR_CNS BR_CPF BR_PIS BR_PIX_KEY BR_PLACA BR_RENAVAM BR_RG BR_TITULO_ELEITORAL EMAIL_ADDRESS]
 }
 
 // CreditCard pairs a deliberately weak 0.3 regex with the Luhn checksum. A

@@ -318,11 +318,17 @@ func BRCEP() analyzer.Recognizer {
 // gated on an explicit CEP word before the number rather than on a structural
 // test: a passing validator is promoted to MaxScore, so a validator here would
 // mask every eight-digit number in a response at full confidence.
+//
+// The score is high because a context validator only filters, it does not
+// raise the score the way WithContext does. A low score would leave the
+// recognizer unreachable to any caller whose threshold sits above it, even
+// though the label gate had already passed — the gate, not the score, is what
+// establishes confidence here.
 func BRCEPUnformatted() analyzer.Recognizer {
 	return analyzer.NewPatternRecognizer(
 		"BrCepUnformattedRecognizer", entities.BRCEP, "pt",
 		[]*analyzer.Pattern{
-			analyzer.MustPattern("BR CEP (unformatted)", `\b\d{8}\b`, 0.4),
+			analyzer.MustPattern("BR CEP (unformatted)", `\b\d{8}\b`, 0.8),
 		},
 	).WithContextValidator(func(text string, start, _ int) bool {
 		return labelBefore(text, start, "cep", "codigo postal", "código postal", "postal code", "zip")
@@ -354,15 +360,19 @@ func BRPlaca() analyzer.Recognizer {
 // this is gated on a PIX word just before the value. The gate is a context
 // validator rather than a low score plus WithContext because a pattern scored
 // under the caller's threshold is dropped before the context bonus can lift it.
+//
+// The bare word "chave" is not accepted: it is Portuguese for "key", so
+// "chave primária" ahead of a row id would mask an ordinary UUID. Only "pix",
+// "evp" and the phrase "chave pix" count.
 func BRPixKey() analyzer.Recognizer {
 	return analyzer.NewPatternRecognizer(
 		"BrPixKeyRecognizer", entities.BRPixKey, "pt",
 		[]*analyzer.Pattern{
 			analyzer.MustPattern("BR PIX EVP key",
-				`\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}\b`, 0.5),
+				`\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}\b`, 0.8),
 		},
 	).WithContextValidator(func(text string, start, _ int) bool {
-		return labelBefore(text, start, "pix", "chave", "evp")
+		return labelBefore(text, start, "pix", "evp", "chave pix")
 	})
 }
 

@@ -23,6 +23,23 @@ func detectBR(t *testing.T, text, entity string) string {
 	return ""
 }
 
+// detectBRAt is detectBR with an explicit score threshold.
+func detectBRAt(t *testing.T, text, entity string, threshold float64) string {
+	t.Helper()
+	reg := analyzer.NewRegistry("en")
+	recognizers.LoadDefaults(reg, "en")
+	eng := analyzer.NewEngine(reg, []string{"en"})
+
+	opts := analyzer.Options{Language: "en", Entities: []string{entity}}
+	if threshold > 0 {
+		opts.Threshold = &threshold
+	}
+	for _, r := range eng.Analyze(text, opts) {
+		return text[r.Start:r.End]
+	}
+	return ""
+}
+
 // TestBrazilianIdentifiers pins that each recognizer fires on a checksum-valid
 // value in the context it appears in production.
 func TestBrazilianIdentifiers(t *testing.T) {
@@ -89,5 +106,48 @@ func TestRenavamAndPisShareTheirChecksum(t *testing.T) {
 	}
 	if got := detectBR(t, "pis "+v+" do trabalhador", entities.BRPIS); got != v {
 		t.Errorf("same digits in PIS context = %q, want %q — the checksums are identical", got, v)
+	}
+}
+
+// TestContextGatedSurviveThreshold pins that the two context-gated recognizers
+// are reachable at a realistic caller threshold.
+//
+// WithContextValidator only filters; unlike WithContext it does not raise the
+// score. A gated pattern scored at or below the caller's threshold is therefore
+// dropped even though its label gate passed, which makes the recognizer
+// unreachable rather than merely conservative.
+func TestContextGatedSurviveThreshold(t *testing.T) {
+	const uuid = "0eac66dd-182d-434f-8ab8-297738b2d66d"
+	for _, th := range []float64{0, 0.4, 0.6, 0.75} {
+		if got := detectBRAt(t, "cep 04571010 zona sul", entities.BRCEP, th); got != "04571010" {
+			t.Errorf("threshold %.2f: unformatted CEP = %q, want 04571010", th, got)
+		}
+		if got := detectBRAt(t, "chave pix "+uuid, entities.BRPixKey, th); got != uuid {
+			t.Errorf("threshold %.2f: PIX key = %q, want the uuid", th, got)
+		}
+	}
+}
+
+// TestPixLabelIsPixSpecific pins that the gate needs a PIX word, not merely the
+// Portuguese word for "key": "chave primária" precedes ordinary row ids.
+func TestPixLabelIsPixSpecific(t *testing.T) {
+	const uuid = "0eac66dd-182d-434f-8ab8-297738b2d66d"
+	for _, text := range []string{
+		"chave primaria " + uuid,
+		"chave estrangeira " + uuid,
+		"a chave " + uuid,
+	} {
+		if got := detectBR(t, text, entities.BRPixKey); got != "" {
+			t.Errorf("%q: masked %q as a PIX key on a generic 'chave'", text, got)
+		}
+	}
+	for _, text := range []string{
+		"chave pix " + uuid,
+		"pix " + uuid,
+		"evp " + uuid,
+	} {
+		if got := detectBR(t, text, entities.BRPixKey); got != uuid {
+			t.Errorf("%q: PIX key = %q, want the uuid", text, got)
+		}
 	}
 }

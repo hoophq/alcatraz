@@ -174,8 +174,10 @@ func originFor(art modelArtifact, override string) (string, error) {
 	}
 	// A trailing slash would leave an empty path segment in the middle of the
 	// URL. Most servers collapse it; S3 does not, because the key is literal,
-	// and answers 404 for an object that is sitting right there.
-	return strings.TrimSuffix(origin, "/"), nil
+	// and answers 404 for an object that is sitting right there. TrimRight,
+	// not TrimSuffix: an origin pasted out of a config or joined by hand can
+	// end in more than one, and two empty segments fail the same way as one.
+	return strings.TrimRight(origin, "/"), nil
 }
 
 // EnsureModel downloads model into the models directory ner.New reads from

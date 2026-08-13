@@ -354,23 +354,29 @@ func TestEnsureModelFromOverridesThePinnedOrigin(t *testing.T) {
 
 // TestEnsureModelFromKeepsTheHubLayout pins the shape of the URL under the
 // origin. A mirror is a bucket keyed like the hub, so the only difference
-// between origins must be the base URL — and a trailing slash on it must not
-// leak an empty path segment into the key, which S3 would answer 404 for.
+// between origins must be the base URL — and trailing slashes on it must not
+// leak empty path segments into the key, which S3 would answer 404 for. One
+// is the copy-paste; more than one is the config value joined to a path that
+// already had it.
 func TestEnsureModelFromKeepsTheHubLayout(t *testing.T) {
-	id, files, art := testModel(t)
-	hub := newFakeHub(t, files)
-	pinTestModel(t, hub, id, art)
+	for _, suffix := range []string{"", "/", "///"} {
+		t.Run("origin"+suffix, func(t *testing.T) {
+			id, files, art := testModel(t)
+			hub := newFakeHub(t, files)
+			pinTestModel(t, hub, id, art)
 
-	if _, err := EnsureModelFrom(context.Background(), id, t.TempDir(), hub.URL+"/"); err != nil {
-		t.Fatalf("EnsureModelFrom: %v", err)
-	}
-	want := []string{
-		"/" + id + "/resolve/" + art.revision + "/model.onnx",
-		"/" + id + "/resolve/" + art.revision + "/tokenizer.json",
-	}
-	sort.Strings(want)
-	if got := hub.paths(); !slices.Equal(got, want) {
-		t.Errorf("requested %v, want %v", got, want)
+			if _, err := EnsureModelFrom(context.Background(), id, t.TempDir(), hub.URL+suffix); err != nil {
+				t.Fatalf("EnsureModelFrom: %v", err)
+			}
+			want := []string{
+				"/" + id + "/resolve/" + art.revision + "/model.onnx",
+				"/" + id + "/resolve/" + art.revision + "/tokenizer.json",
+			}
+			sort.Strings(want)
+			if got := hub.paths(); !slices.Equal(got, want) {
+				t.Errorf("requested %v, want %v", got, want)
+			}
+		})
 	}
 }
 

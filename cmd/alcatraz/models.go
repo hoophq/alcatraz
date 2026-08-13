@@ -16,21 +16,25 @@ import (
 	"github.com/hoophq/alcatraz/models"
 )
 
-// The model downloader for the optional NER backend, exposed so a model can
-// be materialised as a build or deploy step rather than on first use:
+// The model commands for the optional NER backend, exposed so a model can be
+// materialised and checked as a build or deploy step rather than on first use:
 //
 //	alcatraz models download [-dest dir] [-model id] [-origin url]
+//	alcatraz models verify   [-dir dir] [-model id]
 //
-// This is the one alcatraz command that touches the network, and it only
-// fetches the pinned URLs. Scanning never does.
+// download is the one alcatraz command that touches the network, and it only
+// fetches the pinned URLs. Scanning never does, and neither does verify.
 //
-// The heavy lifting is [models.EnsureModelFrom], which lives in the root
-// module precisely so this command costs the CLI no dependencies: the ONNX
-// runtime stays behind the ner module.
+// The heavy lifting is [models.EnsureModelFrom] and [models.VerifyModelIn],
+// which live in the root module precisely so these commands cost the CLI no
+// dependencies: the ONNX runtime stays behind the ner module.
 
-// ensureModelFrom is the download entry point, indirected so tests can run
-// the command without a network.
-var ensureModelFrom = models.EnsureModelFrom
+// ensureModelFrom and verifyModelIn are the entry points, indirected so tests
+// can run the commands without a network and without a seeded directory.
+var (
+	ensureModelFrom = models.EnsureModelFrom
+	verifyModelIn   = models.VerifyModelIn
+)
 
 func runModels(args []string) (int, error) {
 	if len(args) == 0 {
@@ -38,11 +42,18 @@ func runModels(args []string) (int, error) {
 		return 0, errors.New("models: expected a subcommand")
 	}
 	sub, rest := args[0], args[1:]
-	if sub != "download" {
+	switch sub {
+	case "download":
+		return runModelsDownload(rest)
+	case "verify":
+		return runModelsVerify(rest)
+	default:
 		modelsUsage(os.Stderr)
-		return 0, fmt.Errorf("models: unknown subcommand %q (want download)", sub)
+		return 0, fmt.Errorf("models: unknown subcommand %q (want download or verify)", sub)
 	}
+}
 
+func runModelsDownload(rest []string) (int, error) {
 	fs := flag.NewFlagSet("models download", flag.ContinueOnError)
 	dest := fs.String("dest", "", "directory to write the model into (empty = the cache ner reads from)")
 	model := fs.String("model", models.DefaultModel, "model id to download")
@@ -64,6 +75,25 @@ func runModels(args []string) (int, error) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	return download(ctx, os.Stdout, *model, *dest, *origin)
+}
+
+func runModelsVerify(rest []string) (int, error) {
+	fs := flag.NewFlagSet("models verify", flag.ContinueOnError)
+	// -dir, not -dest: this command writes nothing, and the naming split
+	// between the models directory and a model's own directory is the one
+	// thing worth being pedantic about here. It is the same directory
+	// "download -dest" fills.
+	dir := fs.String("dir", "", "models directory to check (empty = the cache ner reads from)")
+	model := fs.String("model", models.DefaultModel, "model id to check")
+	if err := fs.Parse(rest); err != nil {
+		return 0, err
+	}
+	if fs.NArg() > 0 {
+		return 0, fmt.Errorf("models verify: unexpected argument %q", fs.Arg(0))
+	}
+	// No signal handling, unlike download: this opens no socket and creates no
+	// file, so an interrupted run leaves nothing behind to clean up.
+	return verify(os.Stdout, *model, *dir)
 }
 
 func download(ctx context.Context, out io.Writer, model, dest, origin string) (int, error) {
@@ -109,6 +139,104 @@ func download(ctx context.Context, out io.Writer, model, dest, origin string) (i
 	fmt.Fprintf(out, "\nModelsDir: %s\n", filepath.Dir(modelPath))
 	fmt.Fprintf(out, "ModelPath: %s\n", modelPath)
 	return 0, nil
+}
+
+// verify re-checks an already-seeded models directory against the pin table
+// and reports what it found. It is the assertion half of download, for the two
+// places that cannot just re-run download: a CI job proving an image really
+// carries the model it claims to — from outside the image, since a distroless
+// one has no shell — and an operator staring at a volume the model runtime
+// rejected.
+//
+// It opens no socket and writes nothing, so it is safe against a read-only
+// mount and safe to run in a network-sealed build.
+func verify(out io.Writer, model, dir string) (int, error) {
+	files := models.PinnedFiles(model)
+	if files == nil {
+		return 0, fmt.Errorf("models verify: %q has no pinned checksums, so it cannot be verified (pinned models: %s)",
+			model, strings.Join(models.PinnedModels(), ", "))
+	}
+	// DefaultDir names the cache without creating it, which is exactly the
+	// property this command needs: looking is not a reason to write. Resolved
+	// here only so the line below names a real path rather than "the default".
+	shown := dir
+	if shown == "" {
+		d, err := models.DefaultDir()
+		if err != nil {
+			return 0, fmt.Errorf("models verify: %w", err)
+		}
+		shown = d
+	}
+
+	fmt.Fprintf(out, "%s @ %s\n", model, shortRev(models.Revision(model)))
+	fmt.Fprintf(out, "checking %d files in %s (no network, no writes):\n", len(files), shown)
+	for _, f := range files {
+		fmt.Fprintf(out, "  %-24s %10s\n", f.Name, humanSize(f.Size))
+	}
+
+	modelPath, err := verifyModelIn(model, dir)
+	if err != nil {
+		return 0, fmt.Errorf("models verify: %w%s", err, verifyHintFor(err, model, dir))
+	}
+
+	fmt.Fprintln(out, "verified:")
+	for _, f := range files {
+		fmt.Fprintf(out, "  %-24s %s\n", f.Name, f.SHA256)
+	}
+	fmt.Fprintf(out, "\nModelsDir: %s\n", filepath.Dir(modelPath))
+	fmt.Fprintf(out, "ModelPath: %s\n", modelPath)
+	return 0, nil
+}
+
+// verifyHintFor turns a verification failure into the next thing to do. The
+// three kinds VerifyModelIn keeps apart lead to three different places, and
+// collapsing them is how an operator ends up re-provisioning a model whose
+// only problem was its mode.
+func verifyHintFor(err error, model, dir string) string {
+	// A models directory that is really a model directory fails as "nothing
+	// here", which reads as a missing download rather than as an argument one
+	// level too deep. Checked first, because the advice it replaces — download
+	// it again — would write a second copy nested inside the first.
+	if wrongLevel := wrongLevelHint(err, model, dir); wrongLevel != "" {
+		return wrongLevel
+	}
+	switch msg := err.Error(); {
+	case strings.Contains(msg, "does not match its pinned sha256"):
+		return "\n  the file is there and its bytes are not the pinned ones — a stale image layer, a" +
+			"\n  truncated copy, or a modified volume. Re-fetch it with: alcatraz models download" + destHint(dir)
+	case strings.Contains(msg, "cannot read"):
+		return "\n  the bytes may be fine and this process cannot see them; check ownership and mode" +
+			"\n  before re-provisioning the model."
+	case strings.Contains(msg, "is missing from"), strings.Contains(msg, "no model directory at"),
+		strings.Contains(msg, "is not a directory"):
+		return "\n  seed the directory with: alcatraz models download" + destHint(dir)
+	default:
+		return ""
+	}
+}
+
+// wrongLevelHint catches the mistake the ModelsDir/ModelPath split exists to
+// prevent: -dir given this model's own directory instead of the parent that
+// holds every model. Detected by name, because that is all there is to go on —
+// the directory the command then looks in does not exist.
+func wrongLevelHint(err error, model, dir string) string {
+	if dir == "" || !strings.Contains(err.Error(), "no model directory at") {
+		return ""
+	}
+	if filepath.Base(dir) != models.Dir("", model) {
+		return ""
+	}
+	return "\n  -dir wants the models directory, the parent that holds every model, not this model's" +
+		"\n  own directory. Try: alcatraz models verify -dir " + filepath.Dir(dir)
+}
+
+// destHint repeats the directory back in the form the download command takes
+// it, so the suggestion can be pasted rather than reassembled.
+func destHint(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	return " --dest " + dir
 }
 
 // hintFor turns a download failure into something the operator can act on.
@@ -183,12 +311,18 @@ func humanSize(n int64) string {
 
 func modelsUsage(w io.Writer) {
 	fmt.Fprintln(w, "usage: alcatraz models download [-dest dir] [-model id] [-origin url]")
+	fmt.Fprintln(w, "       alcatraz models verify   [-dir dir] [-model id]")
 	fmt.Fprintln(w, "\nDownloads a NER model and verifies every file against its pinned sha256.")
 	fmt.Fprintln(w, "Without -dest it warms the cache ner.New reads from; with -dest it writes a")
 	fmt.Fprintln(w, "self-contained directory to copy into an image or a shared volume.")
 	fmt.Fprintln(w, "\n-origin points the fetch at a mirror laid out like the hub, at")
 	fmt.Fprintln(w, "{origin}/{model}/resolve/{revision}/{file}. The pinned digests are unchanged,")
 	fmt.Fprintln(w, "so a mirror serving anything else fails the same way a corrupt transfer does.")
+	fmt.Fprintln(w, "\nverify re-checks a directory download already filled, without fetching")
+	fmt.Fprintln(w, "anything: no network, no writes, safe against a read-only mount. It exits")
+	fmt.Fprintln(w, "non-zero naming the first file that is absent, mismatched or unreadable —")
+	fmt.Fprintln(w, "three different problems that are worth telling apart. -dir is the models")
+	fmt.Fprintln(w, "directory, the same one download fills with -dest.")
 	fmt.Fprintln(w, "\nverifiable models:")
 	for _, id := range models.PinnedModels() {
 		fmt.Fprintf(w, "  %-40s %s\n", id, models.Origin(id))

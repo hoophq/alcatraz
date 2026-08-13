@@ -10,6 +10,7 @@
 //	alcatraz hook claude-prompt [flags]
 //	                                   UserPromptSubmit guard for Claude Code
 //	alcatraz models download [flags]   fetch a verified NER model
+//	alcatraz models verify [flags]     re-check an already-seeded model
 //	alcatraz version                   print the version (also -version, --version)
 //
 // Scanning is the network-free part, and it is the whole product: no
@@ -115,7 +116,7 @@
 // the model not to repeat the values; in block mode the prompt is rejected
 // with a masked view of what tripped it.
 //
-// # Model download
+// # Model download and verify
 //
 // alcatraz models download fetches the optional NER backend's model and
 // verifies every file against its pinned sha256. This is the one alcatraz
@@ -148,7 +149,32 @@
 // before the fetch, and every pinned model is listed with its own in the
 // usage text.
 //
-// The heavy lifting is [models.EnsureModelFrom], which lives in the root
-// module so this command costs the CLI no dependencies: the ONNX runtime
-// stays behind the ner module.
+// alcatraz models verify re-checks a directory download already filled,
+// without fetching anything:
+//
+//	-dir string
+//		models directory to check (empty = the cache ner reads from)
+//	-model string
+//		model id to check (default "KnightsAnalytics/distilbert-NER")
+//
+// It opens no socket and writes nothing — not even the default cache
+// directory, which it names but does not create — so it is safe against a
+// read-only mount and inside a network-sealed build. It exits non-zero
+// naming the first file that is absent, mismatched or unreadable, three
+// problems worth telling apart: absent means the directory was never seeded,
+// mismatched means it was seeded with the wrong bytes, and unreadable means
+// the bytes may be fine and the process cannot see them. Two callers need
+// this rather than a second download: a CI job proving an image really
+// carries the model it claims to, asserted from outside because a distroless
+// image has no shell, and an operator diagnosing a volume the model runtime
+// rejected.
+//
+// -dir is the models directory, the same one download fills with -dest.
+// Handing it a model's own directory is the mistake the ModelsDir/ModelPath
+// split exists to prevent, so the failure says so instead of advising a
+// download that would nest a second copy inside the first.
+//
+// The heavy lifting is [models.EnsureModelFrom] and [models.VerifyModelIn],
+// which live in the root module so these commands cost the CLI no
+// dependencies: the ONNX runtime stays behind the ner module.
 package main

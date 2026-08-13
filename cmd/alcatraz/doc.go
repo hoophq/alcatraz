@@ -154,6 +154,9 @@
 //
 //	-dir string
 //		models directory to check (empty = the cache ner reads from)
+//	-dest string
+//		alias for -dir, so a line lifted out of a download runbook runs
+//		unedited
 //	-model string
 //		model id to check (default "KnightsAnalytics/distilbert-NER")
 //
@@ -172,7 +175,10 @@
 // -dir is the models directory, the same one download fills with -dest.
 // Handing it a model's own directory is the mistake the ModelsDir/ModelPath
 // split exists to prevent, so the failure says so instead of advising a
-// download that would nest a second copy inside the first.
+// download that would nest a second copy inside the first. It is spelled -dir
+// rather than -dest because this command writes nothing and so has no
+// destination, but -dest names the same directory and is accepted: the two
+// commands sit next to each other in every runbook that has either.
 //
 // The heavy lifting is [models.EnsureModelFrom] and [models.VerifyModelIn],
 // which live in the root module so these commands cost the CLI no

@@ -320,6 +320,132 @@ func TestModelsVerifyDirIsHonoured(t *testing.T) {
 	}
 }
 
+// TestModelsVerifyAcceptsDestAsAnAlias covers the runbook case the alias is
+// for: the verify line sits under the download line, and copying the path
+// across must not fail over the name of the flag holding it.
+func TestModelsVerifyAcceptsDestAsAnAlias(t *testing.T) {
+	for _, flag := range []string{"--dir", "--dest", "-dest"} {
+		t.Run(flag, func(t *testing.T) {
+			got := stubVerify(t, "/opt/alcatraz/models/KnightsAnalytics_distilbert-NER", nil)
+
+			if _, err := runModels([]string{"verify", flag, "/opt/alcatraz/models"}); err != nil {
+				t.Fatalf("runModels: %v", err)
+			}
+			if got.dir != "/opt/alcatraz/models" {
+				t.Errorf("%s: dir = %q, want /opt/alcatraz/models", flag, got.dir)
+			}
+		})
+	}
+}
+
+// TestModelsVerifyRejectsTwoDirectories keeps the alias from silently picking
+// one: two spellings of the same flag disagreeing is a mistake in the caller's
+// script, and verifying whichever won would answer a question nobody asked.
+func TestModelsVerifyRejectsTwoDirectories(t *testing.T) {
+	got := stubVerify(t, "/unused", nil)
+
+	_, err := runModels([]string{"verify", "--dir", "/opt/a", "--dest", "/opt/b"})
+	if err == nil {
+		t.Fatal("runModels accepted -dir and -dest naming different directories")
+	}
+	for _, want := range []string{"/opt/a", "/opt/b"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %v, want it to name %s", err, want)
+		}
+	}
+	if got.dir != "" {
+		t.Errorf("verified %q anyway", got.dir)
+	}
+}
+
+// failAfter accepts n bytes and then refuses, standing in for a stdout that
+// fails partway through: a full disk, a descriptor closed under the process.
+// (A broken pipe on fd 1 is not this case — Go raises SIGPIPE and the process
+// dies where it stands, which is already the right answer.)
+type failAfter struct {
+	left int
+	err  error
+}
+
+func (f *failAfter) Write(p []byte) (int, error) {
+	if f.left <= 0 {
+		return 0, f.err
+	}
+	if len(p) > f.left {
+		n := f.left
+		f.left = 0
+		return n, f.err
+	}
+	f.left -= len(p)
+	return len(p), nil
+}
+
+// TestModelsCommandsReportAFailedStdout holds these two commands to the
+// contract writeFindings states: a stdout that failed surfaces as an error,
+// never as a silent exit 0. It matters more here than for a scan — both
+// commands are read by something deciding whether a model is usable, and
+// "verified" with no output would be taken as a pass.
+func TestModelsCommandsReportAFailedStdout(t *testing.T) {
+	errFull := errors.New("no space left on device")
+	const dir = "/opt/alcatraz/models"
+	modelPath := filepath.Join(dir, "KnightsAnalytics_distilbert-NER")
+
+	// The length of a whole successful run, so a writer can be made to fail on
+	// its very last write — past every early check, where only the final one
+	// can catch it.
+	full := func(run func(io.Writer)) int {
+		var buf bytes.Buffer
+		run(&buf)
+		return buf.Len()
+	}
+
+	t.Run("verify before hashing", func(t *testing.T) {
+		got := stubVerify(t, modelPath, nil)
+
+		_, err := verify(&failAfter{err: errFull}, models.DefaultModel, dir)
+		if !errors.Is(err, errFull) {
+			t.Fatalf("verify: %v, want %v", err, errFull)
+		}
+		// The manifest is printed before the hashing starts, so a writer that
+		// is already gone should stop the run there rather than re-read 250MB
+		// to report into it.
+		if got.dir != "" {
+			t.Error("hashed the model into a writer that had already failed")
+		}
+	})
+
+	t.Run("verify on the last line", func(t *testing.T) {
+		stubVerify(t, modelPath, nil)
+		n := full(func(w io.Writer) { verify(w, models.DefaultModel, dir) })
+
+		if _, err := verify(&failAfter{left: n - 1, err: errFull}, models.DefaultModel, dir); !errors.Is(err, errFull) {
+			t.Fatalf("verify: %v, want %v", err, errFull)
+		}
+	})
+
+	t.Run("download before fetching", func(t *testing.T) {
+		got := stubEnsure(t, modelPath, nil)
+
+		_, err := download(context.Background(), &failAfter{err: errFull}, models.DefaultModel, dir, "")
+		if !errors.Is(err, errFull) {
+			t.Fatalf("download: %v, want %v", err, errFull)
+		}
+		if got.model != "" {
+			t.Error("fetched 250MB into a writer that had already failed")
+		}
+	})
+
+	t.Run("download on the last line", func(t *testing.T) {
+		stubEnsure(t, modelPath, nil)
+		n := full(func(w io.Writer) { download(context.Background(), w, models.DefaultModel, dir, "") })
+
+		_, err := download(context.Background(), &failAfter{left: n - 1, err: errFull}, models.DefaultModel, dir, "")
+		if !errors.Is(err, errFull) {
+			t.Fatalf("download: %v, want %v", err, errFull)
+		}
+	})
+}
+
 func TestModelsVerifyPrintsWhatItChecked(t *testing.T) {
 	modelPath := filepath.Join("/opt/alcatraz/models", "KnightsAnalytics_distilbert-NER")
 	stubVerify(t, modelPath, nil)

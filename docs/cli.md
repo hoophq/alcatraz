@@ -109,6 +109,7 @@ usage text; the origin actually used is printed before the fetch starts.
 | Flag | Default | Meaning |
 |---|---|---|
 | `--dir` | the cache `ner.New` reads from | models directory to check |
+| `--dest` | — | alias for `--dir`, so a `download` line copies across unedited |
 | `--model` | `KnightsAnalytics/distilbert-NER` | which pinned model to check |
 
 `verify` re-checks a directory `download` already filled. It opens no socket
@@ -128,6 +129,15 @@ runtime rejected.
 > is the same one `download --dest` fills. Passing a model's own directory is
 > the classic slip; `verify` recognises it and points at the parent instead of
 > telling you to download a second copy nested inside the first.
+
+The flag is `--dir` rather than `--dest` because this command writes nothing,
+so it has no destination — but `--dest` names the same directory and is
+accepted, so the two lines in a runbook differ only in the verb:
+
+```bash
+alcatraz models download --dest /opt/alcatraz/models   # in the build
+alcatraz models verify   --dest /opt/alcatraz/models   # in the test that follows
+```
 
 See [Running NER without internet access](ner-offline.md) for the deployment
 patterns these commands exist for.

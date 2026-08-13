@@ -84,12 +84,23 @@ func runModelsVerify(rest []string) (int, error) {
 	// thing worth being pedantic about here. It is the same directory
 	// "download -dest" fills.
 	dir := fs.String("dir", "", "models directory to check (empty = the cache ner reads from)")
+	// -dest is accepted as an alias all the same, so a line lifted out of a
+	// download runbook runs unedited. The two commands sit next to each other
+	// in every runbook that has either; failing one of them over the name of
+	// the same path is friction with nothing on the other side of it.
+	dest := fs.String("dest", "", "alias for -dir, for symmetry with download")
 	model := fs.String("model", models.DefaultModel, "model id to check")
 	if err := fs.Parse(rest); err != nil {
 		return 0, err
 	}
 	if fs.NArg() > 0 {
 		return 0, fmt.Errorf("models verify: unexpected argument %q", fs.Arg(0))
+	}
+	switch {
+	case *dir != "" && *dest != "" && *dir != *dest:
+		return 0, fmt.Errorf("models verify: -dir %q and -dest %q name different directories, and they are the same flag", *dir, *dest)
+	case *dir == "":
+		*dir = *dest
 	}
 	// No signal handling, unlike download: this opens no socket and creates no
 	// file, so an interrupted run leaves nothing behind to clean up.
@@ -117,11 +128,17 @@ func download(ctx context.Context, out io.Writer, model, dest, origin string) (i
 	for _, f := range files {
 		total += f.Size
 	}
-	fmt.Fprintf(out, "%s @ %s\n", model, shortRev(models.Revision(model)))
-	fmt.Fprintf(out, "origin: %s\n", origin)
-	fmt.Fprintf(out, "fetching %d files, %s total (cached files are verified, not re-fetched):\n", len(files), humanSize(total))
+	w := &errWriter{w: out}
+	w.printf("%s @ %s\n", model, shortRev(models.Revision(model)))
+	w.printf("origin: %s\n", origin)
+	w.printf("fetching %d files, %s total (cached files are verified, not re-fetched):\n", len(files), humanSize(total))
 	for _, f := range files {
-		fmt.Fprintf(out, "  %-24s %10s\n", f.Name, humanSize(f.Size))
+		w.printf("  %-24s %10s\n", f.Name, humanSize(f.Size))
+	}
+	// Checked before the fetch, not only at the end: there is no point pulling
+	// 250MB to report it into a writer that is already failing.
+	if w.err != nil {
+		return 0, fmt.Errorf("models download: writing output: %w", w.err)
 	}
 
 	modelPath, err := ensureModelFrom(ctx, model, dest, origin)
@@ -129,15 +146,18 @@ func download(ctx context.Context, out io.Writer, model, dest, origin string) (i
 		return 0, fmt.Errorf("models download: %w%s", err, hintFor(err))
 	}
 
-	fmt.Fprintln(out, "verified:")
+	w.printf("verified:\n")
 	for _, f := range files {
-		fmt.Fprintf(out, "  %-24s %s\n", f.Name, f.SHA256)
+		w.printf("  %-24s %s\n", f.Name, f.SHA256)
 	}
 	// Both directories, because they are one level apart and picking the
 	// wrong one is the likeliest way to misconfigure this: ModelsDir is the
 	// parent that holds every model, ModelPath is this model's own directory.
-	fmt.Fprintf(out, "\nModelsDir: %s\n", filepath.Dir(modelPath))
-	fmt.Fprintf(out, "ModelPath: %s\n", modelPath)
+	w.printf("\nModelsDir: %s\n", filepath.Dir(modelPath))
+	w.printf("ModelPath: %s\n", modelPath)
+	if w.err != nil {
+		return 0, fmt.Errorf("models download: writing output: %w", w.err)
+	}
 	return 0, nil
 }
 
@@ -168,10 +188,16 @@ func verify(out io.Writer, model, dir string) (int, error) {
 		shown = d
 	}
 
-	fmt.Fprintf(out, "%s @ %s\n", model, shortRev(models.Revision(model)))
-	fmt.Fprintf(out, "checking %d files in %s (no network, no writes):\n", len(files), shown)
+	w := &errWriter{w: out}
+	w.printf("%s @ %s\n", model, shortRev(models.Revision(model)))
+	w.printf("checking %d files in %s (no network, no writes):\n", len(files), shown)
 	for _, f := range files {
-		fmt.Fprintf(out, "  %-24s %10s\n", f.Name, humanSize(f.Size))
+		w.printf("  %-24s %10s\n", f.Name, humanSize(f.Size))
+	}
+	// Checked before the hashing, not only at the end: re-reading 250MB to
+	// report the result into a writer that is already failing helps nobody.
+	if w.err != nil {
+		return 0, fmt.Errorf("models verify: writing output: %w", w.err)
 	}
 
 	modelPath, err := verifyModelIn(model, dir)
@@ -179,13 +205,40 @@ func verify(out io.Writer, model, dir string) (int, error) {
 		return 0, fmt.Errorf("models verify: %w%s", err, verifyHintFor(err, model, dir))
 	}
 
-	fmt.Fprintln(out, "verified:")
+	w.printf("verified:\n")
 	for _, f := range files {
-		fmt.Fprintf(out, "  %-24s %s\n", f.Name, f.SHA256)
+		w.printf("  %-24s %s\n", f.Name, f.SHA256)
 	}
-	fmt.Fprintf(out, "\nModelsDir: %s\n", filepath.Dir(modelPath))
-	fmt.Fprintf(out, "ModelPath: %s\n", modelPath)
+	w.printf("\nModelsDir: %s\n", filepath.Dir(modelPath))
+	w.printf("ModelPath: %s\n", modelPath)
+	// A verify that could not report is not a verify that passed: the whole
+	// output is the result, and a caller reading exit 0 with nothing on stdout
+	// would conclude the model is good on no evidence.
+	if w.err != nil {
+		return 0, fmt.Errorf("models verify: writing output: %w", w.err)
+	}
 	return 0, nil
+}
+
+// errWriter latches the first write error so a run of report lines can be
+// written straight through and answered for once, instead of nesting eight
+// error checks around what is conceptually one paragraph.
+//
+// Write errors are returned rather than dropped, per the contract writeFindings
+// already keeps: a stdout that failed — a full disk, a descriptor closed under
+// the process — has to surface as exit code 2. Reporting nothing and exiting 0
+// is the one outcome these commands must not produce, since both are read by
+// something deciding whether a model is usable.
+type errWriter struct {
+	w   io.Writer
+	err error
+}
+
+func (e *errWriter) printf(format string, a ...any) {
+	if e.err != nil {
+		return
+	}
+	_, e.err = fmt.Fprintf(e.w, format, a...)
 }
 
 // verifyHintFor turns a verification failure into the next thing to do. The
@@ -322,7 +375,8 @@ func modelsUsage(w io.Writer) {
 	fmt.Fprintln(w, "anything: no network, no writes, safe against a read-only mount. It exits")
 	fmt.Fprintln(w, "non-zero naming the first file that is absent, mismatched or unreadable —")
 	fmt.Fprintln(w, "three different problems that are worth telling apart. -dir is the models")
-	fmt.Fprintln(w, "directory, the same one download fills with -dest.")
+	fmt.Fprintln(w, "directory, the same one download fills with -dest, and -dest is accepted")
+	fmt.Fprintln(w, "as an alias for it.")
 	fmt.Fprintln(w, "\nverifiable models:")
 	for _, id := range models.PinnedModels() {
 		fmt.Fprintf(w, "  %-40s %s\n", id, models.Origin(id))

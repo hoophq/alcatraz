@@ -19,19 +19,18 @@ import (
 // The model downloader for the optional NER backend, exposed so a model can
 // be materialised as a build or deploy step rather than on first use:
 //
-//	alcatraz models download [-dest dir] [-model id]
+//	alcatraz models download [-dest dir] [-model id] [-origin url]
 //
 // This is the one alcatraz command that touches the network, and it only
 // fetches the pinned URLs. Scanning never does.
 //
-// The heavy lifting is [models.EnsureModelIn], which lives in the root
+// The heavy lifting is [models.EnsureModelFrom], which lives in the root
 // module precisely so this command costs the CLI no dependencies: the ONNX
 // runtime stays behind the ner module.
 
-// ensureModelIn is the download entry point, indirected so tests can run the
-// command without a network. The models package hides its hub URL, so the
-// seam has to be here.
-var ensureModelIn = models.EnsureModelIn
+// ensureModelFrom is the download entry point, indirected so tests can run
+// the command without a network.
+var ensureModelFrom = models.EnsureModelFrom
 
 func runModels(args []string) (int, error) {
 	if len(args) == 0 {
@@ -47,6 +46,7 @@ func runModels(args []string) (int, error) {
 	fs := flag.NewFlagSet("models download", flag.ContinueOnError)
 	dest := fs.String("dest", "", "directory to write the model into (empty = the cache ner reads from)")
 	model := fs.String("model", models.DefaultModel, "model id to download")
+	origin := fs.String("origin", "", "base URL to fetch from, laid out like the hub (empty = the model's pinned origin)")
 	if err := fs.Parse(rest); err != nil {
 		return 0, err
 	}
@@ -63,14 +63,21 @@ func runModels(args []string) (int, error) {
 	// follows SIGTERM and the grace period.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return download(ctx, os.Stdout, *model, *dest)
+	return download(ctx, os.Stdout, *model, *dest, *origin)
 }
 
-func download(ctx context.Context, out io.Writer, model, dest string) (int, error) {
+func download(ctx context.Context, out io.Writer, model, dest, origin string) (int, error) {
 	files := models.PinnedFiles(model)
 	if files == nil {
 		return 0, fmt.Errorf("models download: %q has no pinned checksums, so it cannot be verified (pinned models: %s)",
 			model, strings.Join(models.PinnedModels(), ", "))
+	}
+	// Resolved here rather than left to the models package, so the origin
+	// printed below is the one actually fetched from. With two possible
+	// origins, a receipt that only says "downloaded" answers the wrong half
+	// of the question a mirrored build raises.
+	if origin == "" {
+		origin = models.Origin(model)
 	}
 
 	// The manifest goes out before the first byte is fetched: 250MB over a
@@ -81,12 +88,13 @@ func download(ctx context.Context, out io.Writer, model, dest string) (int, erro
 		total += f.Size
 	}
 	fmt.Fprintf(out, "%s @ %s\n", model, shortRev(models.Revision(model)))
+	fmt.Fprintf(out, "origin: %s\n", origin)
 	fmt.Fprintf(out, "fetching %d files, %s total (cached files are verified, not re-fetched):\n", len(files), humanSize(total))
 	for _, f := range files {
 		fmt.Fprintf(out, "  %-24s %10s\n", f.Name, humanSize(f.Size))
 	}
 
-	modelPath, err := ensureModelIn(ctx, model, dest)
+	modelPath, err := ensureModelFrom(ctx, model, dest, origin)
 	if err != nil {
 		return 0, fmt.Errorf("models download: %w%s", err, hintFor(err))
 	}
@@ -111,6 +119,11 @@ func download(ctx context.Context, out io.Writer, model, dest string) (int, erro
 // this command is built for — a non-root container writing a mounted volume —
 // and answering it with a note about proxies sends the operator off to debug
 // egress that was never involved.
+//
+// For the same reason no hint names huggingface.co any more: the pin table can
+// send a model somewhere else and -origin overrides both, so a hint that
+// assumes the hub would send an operator to allow-list a host their build
+// never contacted.
 func hintFor(err error) string {
 	var urlErr *url.Error
 	switch msg := err.Error(); {
@@ -123,13 +136,25 @@ func hintFor(err error) string {
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return "\n  the download was interrupted; re-run to resume (verified files are not re-fetched)."
 	case errors.As(err, &urlErr):
-		return "\n  only huggingface.co is contacted; behind a proxy, set HTTPS_PROXY."
+		return fmt.Sprintf("\n  only %s is contacted; behind a proxy, set HTTPS_PROXY.", hostOf(urlErr.URL))
 	case strings.Contains(msg, "unexpected status"):
-		return "\n  huggingface.co answered but would not serve the file; the pinned revision may have" +
-			"\n  been withdrawn, or the request was rate limited."
+		return "\n  the origin answered but would not serve the file; the pinned revision may have been" +
+			"\n  withdrawn, a mirror may not carry it, or the request was rate limited."
 	default:
 		return ""
 	}
+}
+
+// hostOf names the host a request was aimed at, for a hint that has to tell an
+// operator which host to reach. It reads the host off the failure rather than
+// off the flag because the two can differ: a redirect is followed, and what
+// could not be reached is where the request ended up.
+func hostOf(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return "the model origin"
+	}
+	return u.Host
 }
 
 // shortRev abbreviates a commit sha for display, leaving anything that is not
@@ -157,12 +182,15 @@ func humanSize(n int64) string {
 }
 
 func modelsUsage(w io.Writer) {
-	fmt.Fprintln(w, "usage: alcatraz models download [-dest dir] [-model id]")
+	fmt.Fprintln(w, "usage: alcatraz models download [-dest dir] [-model id] [-origin url]")
 	fmt.Fprintln(w, "\nDownloads a NER model and verifies every file against its pinned sha256.")
 	fmt.Fprintln(w, "Without -dest it warms the cache ner.New reads from; with -dest it writes a")
 	fmt.Fprintln(w, "self-contained directory to copy into an image or a shared volume.")
+	fmt.Fprintln(w, "\n-origin points the fetch at a mirror laid out like the hub, at")
+	fmt.Fprintln(w, "{origin}/{model}/resolve/{revision}/{file}. The pinned digests are unchanged,")
+	fmt.Fprintln(w, "so a mirror serving anything else fails the same way a corrupt transfer does.")
 	fmt.Fprintln(w, "\nverifiable models:")
 	for _, id := range models.PinnedModels() {
-		fmt.Fprintf(w, "  %s\n", id)
+		fmt.Fprintf(w, "  %-40s %s\n", id, models.Origin(id))
 	}
 }

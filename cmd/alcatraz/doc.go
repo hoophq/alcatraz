@@ -126,6 +126,9 @@
 //		from)
 //	-model string
 //		model id to download (default "KnightsAnalytics/distilbert-NER")
+//	-origin string
+//		base URL to fetch from, laid out like the hub (empty = the
+//		model's pinned origin)
 //
 // Without -dest it warms the cache ner.New reads from; with -dest it writes
 // a self-contained directory to copy into an image or a shared volume.
@@ -134,7 +137,18 @@
 // two paths a deployment wires into its config. SIGINT or SIGTERM cancels
 // the fetch so an evicted init container does not strand a partial file.
 //
-// The heavy lifting is [models.EnsureModelIn], which lives in the root
+// -origin points the fetch at a mirror — an internal bucket, an air-gapped
+// cache — without the pin table having to know about that build. Only the
+// base URL moves: the layout under it stays
+// {origin}/{model}/resolve/{revision}/{file}, so a mirror is a bucket keyed
+// like the hub rather than a second code path. The pinned digests are
+// unchanged, so a mirror serving anything else fails exactly as a corrupted
+// transfer does and installs nothing — an origin is trusted for
+// availability, never for content. The origin actually used is printed
+// before the fetch, and every pinned model is listed with its own in the
+// usage text.
+//
+// The heavy lifting is [models.EnsureModelFrom], which lives in the root
 // module so this command costs the CLI no dependencies: the ONNX runtime
 // stays behind the ner module.
 package main

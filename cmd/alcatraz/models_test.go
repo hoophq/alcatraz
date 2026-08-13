@@ -15,8 +15,8 @@ import (
 
 // ensureCall records what the swapped-in downloader was handed.
 type ensureCall struct {
-	ctx         context.Context
-	model, dest string
+	ctx                 context.Context
+	model, dest, origin string
 }
 
 // stubEnsure swaps the downloader for the duration of a test, so the command
@@ -25,12 +25,12 @@ type ensureCall struct {
 func stubEnsure(t *testing.T, ret string, err error) *ensureCall {
 	t.Helper()
 	got := &ensureCall{}
-	prev := ensureModelIn
-	ensureModelIn = func(ctx context.Context, model, dest string) (string, error) {
-		got.ctx, got.model, got.dest = ctx, model, dest
+	prev := ensureModelFrom
+	ensureModelFrom = func(ctx context.Context, model, dest, origin string) (string, error) {
+		got.ctx, got.model, got.dest, got.origin = ctx, model, dest, origin
 		return ret, err
 	}
-	t.Cleanup(func() { ensureModelIn = prev })
+	t.Cleanup(func() { ensureModelFrom = prev })
 	return got
 }
 
@@ -64,12 +64,45 @@ func TestModelsDownloadDestIsHonoured(t *testing.T) {
 	}
 }
 
+func TestModelsDownloadOriginIsHonoured(t *testing.T) {
+	got := stubEnsure(t, "/opt/alcatraz/models/KnightsAnalytics_distilbert-NER", nil)
+
+	const mirror = "https://models.internal/alcatraz"
+	if _, err := runModels([]string{"download", "-origin", mirror}); err != nil {
+		t.Fatalf("runModels: %v", err)
+	}
+	if got.origin != mirror {
+		t.Errorf("origin = %q, want %q", got.origin, mirror)
+	}
+}
+
+func TestModelsDownloadResolvesTheOriginItReports(t *testing.T) {
+	got := stubEnsure(t, "/opt/alcatraz/models/KnightsAnalytics_distilbert-NER", nil)
+
+	var out bytes.Buffer
+	if _, err := download(context.Background(), &out, models.DefaultModel, "", ""); err != nil {
+		t.Fatalf("download: %v", err)
+	}
+
+	// An omitted -origin is resolved here, not left to the models package, so
+	// that the origin on the receipt is the one the bytes came from. Printing
+	// "origin: (default)" while the pin table quietly redirected the fetch is
+	// the confusion this command exists to prevent.
+	want := models.Origin(models.DefaultModel)
+	if got.origin != want {
+		t.Errorf("origin passed to the downloader = %q, want the resolved %q", got.origin, want)
+	}
+	if !strings.Contains(out.String(), "origin: "+want) {
+		t.Errorf("output does not report the origin %q:\n%s", want, out.String())
+	}
+}
+
 func TestModelsDownloadPrintsBothPaths(t *testing.T) {
 	modelPath := filepath.Join("/opt/alcatraz/models", "KnightsAnalytics_distilbert-NER")
 	stubEnsure(t, modelPath, nil)
 
 	var out bytes.Buffer
-	if _, err := download(context.Background(), &out, models.DefaultModel, "/opt/alcatraz/models"); err != nil {
+	if _, err := download(context.Background(), &out, models.DefaultModel, "/opt/alcatraz/models", ""); err != nil {
 		t.Fatalf("download: %v", err)
 	}
 	got := out.String()
@@ -160,6 +193,34 @@ func TestModelsDownloadFailureIsActionable(t *testing.T) {
 	}
 }
 
+func TestHintNamesTheHostThatFailed(t *testing.T) {
+	// A hint that hardcodes the hub tells an operator running against a mirror
+	// to allow-list a host their build never contacts. The host is read off the
+	// failure, so it survives a redirect too.
+	cases := []struct {
+		name, url, want string
+	}{
+		{"hub", "https://huggingface.co/x/resolve/abc/model.onnx", "huggingface.co"},
+		{"mirror", "https://models.internal/alcatraz/x/resolve/abc/model.onnx", "models.internal"},
+		// Nothing to name: better a vague hint than a confident wrong host.
+		{"unparseable", "://nonsense", "the model origin"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := fmt.Errorf("models: downloading model.onnx: %w", &url.Error{
+				Op: "Get", URL: c.url, Err: errors.New("dial tcp: i/o timeout"),
+			})
+			got := hintFor(err)
+			if !strings.Contains(got, c.want) {
+				t.Errorf("hint = %q, want it to name %q", got, c.want)
+			}
+			if c.want != "huggingface.co" && strings.Contains(got, "huggingface.co") {
+				t.Errorf("hint = %q, want no mention of the hub", got)
+			}
+		})
+	}
+}
+
 func TestModelsDownloadContextIsCancellable(t *testing.T) {
 	got := stubEnsure(t, t.TempDir(), nil)
 	if _, err := runModels([]string{"download"}); err != nil {
@@ -187,10 +248,22 @@ func TestModelsUsage(t *testing.T) {
 	if !strings.Contains(got, "alcatraz models download") {
 		t.Errorf("usage does not show the command:\n%s", got)
 	}
-	// The list of verifiable ids is the point of the usage text.
+	// The list of verifiable ids is the point of the usage text, and each one
+	// is listed with where it is fetched from: with two possible origins, an id
+	// on its own no longer says what a bare download would contact.
 	for _, id := range models.PinnedModels() {
 		if !strings.Contains(got, id) {
 			t.Errorf("usage does not list the pinned model %q:\n%s", id, got)
+		}
+		if !strings.Contains(got, models.Origin(id)) {
+			t.Errorf("usage does not show the origin of %q:\n%s", id, got)
+		}
+	}
+	// The layout is the contract a mirror has to satisfy, so it belongs in the
+	// usage rather than only in the package docs.
+	for _, want := range []string{"-origin", "{origin}/{model}/resolve/{revision}/{file}"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("usage does not mention %q:\n%s", want, got)
 		}
 	}
 }

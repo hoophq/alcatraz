@@ -131,6 +131,7 @@ func download(ctx context.Context, out io.Writer, model, dest, origin string) (i
 	w := &errWriter{w: out}
 	w.printf("%s @ %s\n", model, shortRev(models.Revision(model)))
 	w.printf("origin: %s\n", origin)
+	w.printf("license: %s\n", licenseOf(model))
 	w.printf("fetching %d files, %s total (cached files are verified, not re-fetched):\n", len(files), humanSize(total))
 	for _, f := range files {
 		w.printf("  %-24s %10s\n", f.Name, humanSize(f.Size))
@@ -190,6 +191,7 @@ func verify(out io.Writer, model, dir string) (int, error) {
 
 	w := &errWriter{w: out}
 	w.printf("%s @ %s\n", model, shortRev(models.Revision(model)))
+	w.printf("license: %s\n", licenseOf(model))
 	w.printf("checking %d files in %s (no network, no writes):\n", len(files), shown)
 	for _, f := range files {
 		w.printf("  %-24s %10s\n", f.Name, humanSize(f.Size))
@@ -347,6 +349,21 @@ func shortRev(rev string) string {
 	return rev
 }
 
+// licenseOf renders a pinned model's license for the report. The URL is on the
+// line because for the default model it is not the repository the files come
+// from, and "Apache-2.0" alone would send an auditor to one that never
+// claimed so.
+func licenseOf(model string) string {
+	id, source := models.License(model)
+	switch {
+	case id == "":
+		return "unrecorded"
+	case source == "":
+		return id
+	}
+	return fmt.Sprintf("%s (declared at %s)", id, source)
+}
+
 // humanSize renders a byte count in the units an operator sizing an image
 // layer or a volume thinks in.
 func humanSize(n int64) string {
@@ -377,8 +394,11 @@ func modelsUsage(w io.Writer) {
 	fmt.Fprintln(w, "three different problems that are worth telling apart. -dir is the models")
 	fmt.Fprintln(w, "directory, the same one download fills with -dest, and -dest is accepted")
 	fmt.Fprintln(w, "as an alias for it.")
+	// Listed here, not only in a run's report: whether a model may be baked
+	// into an image we publish is a question that comes up before any fetch.
 	fmt.Fprintln(w, "\nverifiable models:")
 	for _, id := range models.PinnedModels() {
-		fmt.Fprintf(w, "  %-40s %s\n", id, models.Origin(id))
+		license, _ := models.License(id)
+		fmt.Fprintf(w, "  %-40s %-24s %s\n", id, models.Origin(id), license)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -611,6 +612,21 @@ func TestPinnedArtifactsWellFormed(t *testing.T) {
 				t.Errorf("%s: origin %q has a trailing slash", id, art.origin)
 			}
 		}
+		// A model with no recorded license is one nobody checked, and pinning
+		// is the moment to find out: the consumer of this table bakes the
+		// weights into an image and cannot take them back out of its history.
+		if art.license == "" {
+			t.Errorf("%s: no license recorded", id)
+		}
+		if u, err := url.Parse(art.licenseSource); art.licenseSource == "" || err != nil || u.Scheme != "https" || u.Host == "" {
+			t.Errorf("%s: license source %q is not an https URL", id, art.licenseSource)
+		}
+		// hoophq/hoopagent may carry no AGPL- or SSPL-licensed component
+		// anywhere in its history. The rule is that repository's, but this
+		// table is where the mistake would be made.
+		if l := strings.ToUpper(art.license); strings.HasPrefix(l, "AGPL") || strings.HasPrefix(l, "SSPL") {
+			t.Errorf("%s: license %q cannot ship in an image published under hoophq/hoopagent", id, art.license)
+		}
 		seen := map[string]bool{}
 		for _, f := range art.files {
 			if !digest.MatchString(f.sha256) {
@@ -632,6 +648,21 @@ func TestPinnedArtifactsWellFormed(t *testing.T) {
 				t.Errorf("%s: %s is not pinned", id, required)
 			}
 		}
+	}
+}
+
+func TestLicense(t *testing.T) {
+	if id, src := License("some-org/unpinned-model"); id != "" || src != "" {
+		t.Errorf(`License(unpinned) = %q, %q, want "", ""`, id, src)
+	}
+	id, src := License(DefaultModel)
+	if id != "Apache-2.0" {
+		t.Errorf("License(%s) = %q, want Apache-2.0", DefaultModel, id)
+	}
+	// The upstream repository, not the one the files are fetched from, which
+	// is the point of recording it separately.
+	if want := "https://huggingface.co/dslim/distilbert-NER"; src != want {
+		t.Errorf("License(%s) source = %q, want %q", DefaultModel, src, want)
 	}
 }
 

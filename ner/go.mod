@@ -4,7 +4,7 @@ module github.com/hoophq/alcatraz/ner
 
 go 1.26.5
 
-require github.com/hoophq/alcatraz v0.0.0
+require github.com/hoophq/alcatraz v0.19.0
 
 require (
 	github.com/gomlx/go-huggingface v0.4.1
@@ -36,6 +36,3 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 	k8s.io/klog/v2 v2.140.0 // indirect
 )
-
-// Local development: resolve the parent module from the repo, not the proxy.
-replace github.com/hoophq/alcatraz => ../

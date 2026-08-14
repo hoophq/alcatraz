@@ -180,6 +180,14 @@
 // destination, but -dest names the same directory and is accepted: the two
 // commands sit next to each other in every runbook that has either.
 //
+// Both commands report the model's pinned license, and the usage lists it per
+// model: baking weights into a published image is a redistribution, so the
+// question is settled before the first build rather than during one. The
+// identifier travels with the URL declaring it, which for the default model is
+// not the repository the files come from — that one is an ONNX conversion
+// published with no model card, inheriting Apache-2.0 from
+// dslim/distilbert-NER.
+//
 // The heavy lifting is [models.EnsureModelFrom] and [models.VerifyModelIn],
 // which live in the root module so these commands cost the CLI no
 // dependencies: the ONNX runtime stays behind the ner module.

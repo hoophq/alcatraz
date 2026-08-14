@@ -139,6 +139,29 @@ alcatraz models download --dest /opt/alcatraz/models   # in the build
 alcatraz models verify   --dest /opt/alcatraz/models   # in the test that follows
 ```
 
+## Model licences
+
+Both commands print the model's pinned licence, and `alcatraz models` lists it
+per model. Baking weights into an image you publish is a redistribution, so the
+question is answered before the first build, not during one.
+
+The identifier travels with the URL declaring it, because the two are not
+always the same repository:
+
+```
+license: Apache-2.0 (declared at https://huggingface.co/dslim/distilbert-NER)
+```
+
+`KnightsAnalytics/distilbert-NER` is an ONNX conversion published with no model
+card, so it declares nothing; the licence is inherited from the weights it
+converted.
+
+> [!NOTE]
+> The fine-tune is trained on CoNLL-2003, whose underlying Reuters corpus has
+> terms of its own. Those bind the training data rather than the published
+> weights, but they are worth checking on a larger candidate model — the class
+> most likely to be non-commercial.
+
 See [Running NER without internet access](ner-offline.md) for the deployment
 patterns these commands exist for.
 

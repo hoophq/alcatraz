@@ -57,6 +57,14 @@ type modelArtifact struct {
 	// digests below are what a file is accepted against wherever it came from,
 	// so the worst a wrong origin can do is fail the download.
 	origin string
+	// license is the SPDX identifier the weights are distributed under.
+	// Pinned like the digests because baking a model into a published image is
+	// a redistribution, and a layer cannot be taken back out of a history.
+	license string
+	// licenseSource is the URL declaring that identifier — not always the
+	// model's own repository, since a conversion published without a model
+	// card inherits the license of the weights it converted.
+	licenseSource string
 }
 
 // modelArtifacts holds every model EnsureModel can verify. Adding a model
@@ -69,6 +77,11 @@ type modelArtifact struct {
 var modelArtifacts = map[string]modelArtifact{
 	DefaultModel: {
 		revision: "13a742d5ea02349d17e18f3755301282c9ee33f7",
+		// Inherited, not declared: this repository ships no model card. The
+		// weights are an ONNX export of dslim/distilbert-NER, Apache-2.0,
+		// itself a fine-tune of distilbert-base-cased, Apache-2.0.
+		license:       "Apache-2.0",
+		licenseSource: "https://huggingface.co/dslim/distilbert-NER",
 		files: []modelFile{
 			{path: "config.json", sha256: "8f9f01d47f61087197f9fa85185d4a7a6248333c15af1b221aa5e8b9b76462b5", size: 925},
 			{path: "model.onnx", sha256: "4440f9fc64cd28ac75d83a38d89716f25947799640cd0e5f1f9f6e57b9c14160", size: 260926482},
@@ -148,6 +161,20 @@ func Origin(model string) string {
 		return art.origin
 	}
 	return defaultOrigin
+}
+
+// License returns the SPDX identifier model's weights are distributed under
+// and the URL declaring it, or "", "" if the model is not pinned.
+//
+// The source comes back alongside the id because it is not always the model's
+// own repository: an inherited license reported as a bare identifier reads as
+// a claim the origin never made.
+func License(model string) (id, source string) {
+	art, ok := modelArtifacts[model]
+	if !ok {
+		return "", ""
+	}
+	return art.license, art.licenseSource
 }
 
 // originFor applies the precedence — caller, then the pin table, then Hugging

@@ -237,6 +237,43 @@ func TestModelsDownloadContextIsCancellable(t *testing.T) {
 	}
 }
 
+// TestModelsReportsCarryTheLicense pins the license into both commands'
+// output, because the output is the artefact: a build log for download, and
+// for verify the evidence a release keeps about what an image contains.
+func TestModelsReportsCarryTheLicense(t *testing.T) {
+	license, source := models.License(models.DefaultModel)
+
+	for _, tc := range []struct {
+		name string
+		run  func(io.Writer) (int, error)
+	}{
+		{"download", func(w io.Writer) (int, error) {
+			stubEnsure(t, "/models/KnightsAnalytics_distilbert-NER", nil)
+			return download(context.Background(), w, models.DefaultModel, "/models", "")
+		}},
+		{"verify", func(w io.Writer) (int, error) {
+			stubVerify(t, "/models/KnightsAnalytics_distilbert-NER", nil)
+			return verify(w, models.DefaultModel, "/models")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			if code, err := tc.run(&out); err != nil || code != 0 {
+				t.Fatalf("%s = (%d, %v), want (0, nil)", tc.name, code, err)
+			}
+			got := out.String()
+			if !strings.Contains(got, license) {
+				t.Errorf("%s does not report the license %q:\n%s", tc.name, license, got)
+			}
+			// The repository the files come from declares no license, so the
+			// id alone points an auditor at the wrong place.
+			if !strings.Contains(got, source) {
+				t.Errorf("%s does not report where %q is declared:\n%s", tc.name, license, got)
+			}
+		})
+	}
+}
+
 func TestModelsUsage(t *testing.T) {
 	for _, args := range [][]string{{}, {"downlaod"}} {
 		_, err := runModels(args)
@@ -262,6 +299,12 @@ func TestModelsUsage(t *testing.T) {
 		}
 		if !strings.Contains(got, models.Origin(id)) {
 			t.Errorf("usage does not show the origin of %q:\n%s", id, got)
+		}
+		// Answered by the list rather than by a run: whether a model may go
+		// into an image we publish is decided before anything is fetched.
+		license, _ := models.License(id)
+		if !strings.Contains(got, license) {
+			t.Errorf("usage does not show the license of %q:\n%s", id, got)
 		}
 	}
 	// The layout is the contract a mirror has to satisfy, so it belongs in the

@@ -22,6 +22,7 @@ alcatraz diff [flags]                scan only the lines a unified diff adds
 alcatraz hook claude-post [flags]    Claude Code PostToolUse output rewriter
 alcatraz hook claude-prompt [flags]  Claude Code UserPromptSubmit guard
 alcatraz models download [flags]     fetch and verify the optional NER model
+alcatraz models verify [flags]       re-check an already-seeded model directory
 alcatraz version                     print the version (also -version/--version)
 ```
 
@@ -103,8 +104,43 @@ mirror serving anything else fails exactly as a corrupt transfer does and
 installs nothing. Run without the flag to see each pinned model's origin in the
 usage text; the origin actually used is printed before the fetch starts.
 
+## Flags: `models verify`
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--dir` | the cache `ner.New` reads from | models directory to check |
+| `--dest` | — | alias for `--dir`, so a `download` line copies across unedited |
+| `--model` | `KnightsAnalytics/distilbert-NER` | which pinned model to check |
+
+`verify` re-checks a directory `download` already filled. It opens no socket
+and writes nothing — not even the default cache directory, which it names but
+does not create — so it is safe against a read-only mount and inside a
+network-sealed build. It exits non-zero naming the first file that is absent,
+mismatched or unreadable; those are three different problems, and the message
+says which one you have.
+
+Two callers need this rather than a second `download`: a CI job proving an
+image really carries the model it claims to, asserted from outside because a
+distroless image has no shell, and an operator diagnosing a volume the model
+runtime rejected.
+
+> [!NOTE]
+> `--dir` is the *models* directory — the parent holding every model — which
+> is the same one `download --dest` fills. Passing a model's own directory is
+> the classic slip; `verify` recognises it and points at the parent instead of
+> telling you to download a second copy nested inside the first.
+
+The flag is `--dir` rather than `--dest` because this command writes nothing,
+so it has no destination — but `--dest` names the same directory and is
+accepted, so the two lines in a runbook differ only in the verb:
+
+```bash
+alcatraz models download --dest /opt/alcatraz/models   # in the build
+alcatraz models verify   --dest /opt/alcatraz/models   # in the test that follows
+```
+
 See [Running NER without internet access](ner-offline.md) for the deployment
-patterns this command exists for.
+patterns these commands exist for.
 
 ## Network
 

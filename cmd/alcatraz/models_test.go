@@ -5,8 +5,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -245,8 +248,10 @@ func TestModelsUsage(t *testing.T) {
 	var out bytes.Buffer
 	modelsUsage(&out)
 	got := out.String()
-	if !strings.Contains(got, "alcatraz models download") {
-		t.Errorf("usage does not show the command:\n%s", got)
+	for _, want := range []string{"alcatraz models download", "alcatraz models verify"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("usage does not show %q:\n%s", want, got)
+		}
 	}
 	// The list of verifiable ids is the point of the usage text, and each one
 	// is listed with where it is fetched from: with two possible origins, an id
@@ -264,6 +269,343 @@ func TestModelsUsage(t *testing.T) {
 	for _, want := range []string{"-origin", "{origin}/{model}/resolve/{revision}/{file}"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("usage does not mention %q:\n%s", want, got)
+		}
+	}
+}
+
+// verifyCall records what the swapped-in verifier was handed.
+type verifyCall struct {
+	model, dir string
+}
+
+// stubVerify swaps the verifier for the duration of a test, for the cases that
+// are about flag handling and output rather than about verification itself.
+func stubVerify(t *testing.T, ret string, err error) *verifyCall {
+	t.Helper()
+	got := &verifyCall{}
+	prev := verifyModelIn
+	verifyModelIn = func(model, dir string) (string, error) {
+		got.model, got.dir = model, dir
+		return ret, err
+	}
+	t.Cleanup(func() { verifyModelIn = prev })
+	return got
+}
+
+func TestModelsVerifyDefaults(t *testing.T) {
+	got := stubVerify(t, "/cache/alcatraz/models/KnightsAnalytics_distilbert-NER", nil)
+
+	code, err := runModels([]string{"verify"})
+	if err != nil || code != 0 {
+		t.Fatalf("runModels = (%d, %v), want (0, nil)", code, err)
+	}
+	if got.model != models.DefaultModel {
+		t.Errorf("model = %q, want the default %q", got.model, models.DefaultModel)
+	}
+	// Empty is passed through: that is what checks the same cache ner.New
+	// reads from, and unlike download it must not create it.
+	if got.dir != "" {
+		t.Errorf("dir = %q, want empty so the default cache is checked", got.dir)
+	}
+}
+
+func TestModelsVerifyDirIsHonoured(t *testing.T) {
+	got := stubVerify(t, "/opt/alcatraz/models/KnightsAnalytics_distilbert-NER", nil)
+
+	if _, err := runModels([]string{"verify", "--dir", "/opt/alcatraz/models"}); err != nil {
+		t.Fatalf("runModels: %v", err)
+	}
+	if got.dir != "/opt/alcatraz/models" {
+		t.Errorf("dir = %q, want /opt/alcatraz/models", got.dir)
+	}
+}
+
+// TestModelsVerifyAcceptsDestAsAnAlias covers the runbook case the alias is
+// for: the verify line sits under the download line, and copying the path
+// across must not fail over the name of the flag holding it.
+func TestModelsVerifyAcceptsDestAsAnAlias(t *testing.T) {
+	for _, flag := range []string{"--dir", "--dest", "-dest"} {
+		t.Run(flag, func(t *testing.T) {
+			got := stubVerify(t, "/opt/alcatraz/models/KnightsAnalytics_distilbert-NER", nil)
+
+			if _, err := runModels([]string{"verify", flag, "/opt/alcatraz/models"}); err != nil {
+				t.Fatalf("runModels: %v", err)
+			}
+			if got.dir != "/opt/alcatraz/models" {
+				t.Errorf("%s: dir = %q, want /opt/alcatraz/models", flag, got.dir)
+			}
+		})
+	}
+}
+
+// TestModelsVerifyRejectsTwoDirectories keeps the alias from silently picking
+// one: two spellings of the same flag disagreeing is a mistake in the caller's
+// script, and verifying whichever won would answer a question nobody asked.
+func TestModelsVerifyRejectsTwoDirectories(t *testing.T) {
+	got := stubVerify(t, "/unused", nil)
+
+	_, err := runModels([]string{"verify", "--dir", "/opt/a", "--dest", "/opt/b"})
+	if err == nil {
+		t.Fatal("runModels accepted -dir and -dest naming different directories")
+	}
+	for _, want := range []string{"/opt/a", "/opt/b"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %v, want it to name %s", err, want)
+		}
+	}
+	if got.dir != "" {
+		t.Errorf("verified %q anyway", got.dir)
+	}
+}
+
+// failAfter accepts n bytes and then refuses, standing in for a stdout that
+// fails partway through: a full disk, a descriptor closed under the process.
+// (A broken pipe on fd 1 is not this case — Go raises SIGPIPE and the process
+// dies where it stands, which is already the right answer.)
+type failAfter struct {
+	left int
+	err  error
+}
+
+func (f *failAfter) Write(p []byte) (int, error) {
+	if f.left <= 0 {
+		return 0, f.err
+	}
+	if len(p) > f.left {
+		n := f.left
+		f.left = 0
+		return n, f.err
+	}
+	f.left -= len(p)
+	return len(p), nil
+}
+
+// TestModelsCommandsReportAFailedStdout holds these two commands to the
+// contract writeFindings states: a stdout that failed surfaces as an error,
+// never as a silent exit 0. It matters more here than for a scan — both
+// commands are read by something deciding whether a model is usable, and
+// "verified" with no output would be taken as a pass.
+func TestModelsCommandsReportAFailedStdout(t *testing.T) {
+	errFull := errors.New("no space left on device")
+	const dir = "/opt/alcatraz/models"
+	modelPath := filepath.Join(dir, "KnightsAnalytics_distilbert-NER")
+
+	// The length of a whole successful run, so a writer can be made to fail on
+	// its very last write — past every early check, where only the final one
+	// can catch it.
+	full := func(run func(io.Writer)) int {
+		var buf bytes.Buffer
+		run(&buf)
+		return buf.Len()
+	}
+
+	t.Run("verify before hashing", func(t *testing.T) {
+		got := stubVerify(t, modelPath, nil)
+
+		_, err := verify(&failAfter{err: errFull}, models.DefaultModel, dir)
+		if !errors.Is(err, errFull) {
+			t.Fatalf("verify: %v, want %v", err, errFull)
+		}
+		// The manifest is printed before the hashing starts, so a writer that
+		// is already gone should stop the run there rather than re-read 250MB
+		// to report into it.
+		if got.dir != "" {
+			t.Error("hashed the model into a writer that had already failed")
+		}
+	})
+
+	t.Run("verify on the last line", func(t *testing.T) {
+		stubVerify(t, modelPath, nil)
+		n := full(func(w io.Writer) { verify(w, models.DefaultModel, dir) })
+
+		if _, err := verify(&failAfter{left: n - 1, err: errFull}, models.DefaultModel, dir); !errors.Is(err, errFull) {
+			t.Fatalf("verify: %v, want %v", err, errFull)
+		}
+	})
+
+	t.Run("download before fetching", func(t *testing.T) {
+		got := stubEnsure(t, modelPath, nil)
+
+		_, err := download(context.Background(), &failAfter{err: errFull}, models.DefaultModel, dir, "")
+		if !errors.Is(err, errFull) {
+			t.Fatalf("download: %v, want %v", err, errFull)
+		}
+		if got.model != "" {
+			t.Error("fetched 250MB into a writer that had already failed")
+		}
+	})
+
+	t.Run("download on the last line", func(t *testing.T) {
+		stubEnsure(t, modelPath, nil)
+		n := full(func(w io.Writer) { download(context.Background(), w, models.DefaultModel, dir, "") })
+
+		_, err := download(context.Background(), &failAfter{left: n - 1, err: errFull}, models.DefaultModel, dir, "")
+		if !errors.Is(err, errFull) {
+			t.Fatalf("download: %v, want %v", err, errFull)
+		}
+	})
+}
+
+func TestModelsVerifyPrintsWhatItChecked(t *testing.T) {
+	modelPath := filepath.Join("/opt/alcatraz/models", "KnightsAnalytics_distilbert-NER")
+	stubVerify(t, modelPath, nil)
+
+	var out bytes.Buffer
+	if _, err := verify(&out, models.DefaultModel, "/opt/alcatraz/models"); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	got := out.String()
+
+	for _, want := range []string{
+		// Same two paths download prints, for the same reason: one of them is
+		// what the caller's config wants and they are one level apart.
+		"ModelsDir: " + filepath.Dir(modelPath),
+		"ModelPath: " + modelPath,
+		// A CI job asserting an image's contents is reading this line to know
+		// the assertion did not quietly reach for the network.
+		"no network, no writes",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q:\n%s", want, got)
+		}
+	}
+	for _, f := range models.PinnedFiles(models.DefaultModel) {
+		if !strings.Contains(got, f.Name) || !strings.Contains(got, f.SHA256) {
+			t.Errorf("output does not report %s and its digest:\n%s", f.Name, got)
+		}
+	}
+}
+
+// seedState lays out a models directory in one of the states VerifyModelIn
+// tells apart and returns the real failure it produces. Real, not hand-copied:
+// the hints below are matched by substring, so the thing worth testing is that
+// they still fire on the messages the models package actually emits.
+//
+// The pinned files are hundreds of megabytes; none of these states needs their
+// contents, only their names.
+func seedState(t *testing.T, state string) (dir string, err error) {
+	t.Helper()
+	dir = t.TempDir()
+	modelPath := models.Dir(dir, models.DefaultModel)
+	first := models.PinnedFiles(models.DefaultModel)[0].Name
+
+	switch state {
+	case "no-dir": // nothing was ever seeded here
+	case "missing", "mismatch", "unreadable":
+		if err := os.MkdirAll(modelPath, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if state != "missing" {
+			bad := filepath.Join(modelPath, first)
+			if err := os.WriteFile(bad, []byte("not the pinned bytes"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if state == "unreadable" {
+				if err := os.Chmod(bad, 0o000); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { os.Chmod(bad, 0o644) })
+			}
+		}
+	default:
+		t.Fatalf("unknown state %q", state)
+	}
+
+	_, err = models.VerifyModelIn(models.DefaultModel, dir)
+	if err == nil {
+		t.Fatalf("VerifyModelIn succeeded on state %q, want a failure to hint about", state)
+	}
+	return dir, err
+}
+
+func TestModelsVerifyFailureIsActionable(t *testing.T) {
+	cases := []struct {
+		state, want string
+		// unwanted is advice that would send the operator to the wrong place.
+		unwanted string
+	}{
+		{state: "no-dir", want: "alcatraz models download"},
+		{state: "missing", want: "alcatraz models download"},
+		{state: "mismatch", want: "stale image layer"},
+		// The likeliest failure in the deployment this command is for — a
+		// model owned by the build stage that put it there, read by a non-root
+		// process — and the one where re-downloading fixes nothing.
+		{state: "unreadable", want: "ownership and mode", unwanted: "alcatraz models download"},
+	}
+	for _, c := range cases {
+		t.Run(c.state, func(t *testing.T) {
+			if c.state == "unreadable" {
+				if runtime.GOOS == "windows" {
+					t.Skip("unix permission bits")
+				}
+				if os.Geteuid() == 0 {
+					t.Skip("running as root, which ignores the permission bits under test")
+				}
+			}
+			dir, err := seedState(t, c.state)
+
+			hint := verifyHintFor(err, models.DefaultModel, dir)
+			if !strings.Contains(hint, c.want) {
+				t.Errorf("hint = %q, want it to mention %q (error: %v)", hint, c.want, err)
+			}
+			if c.unwanted != "" && strings.Contains(hint, c.unwanted) {
+				t.Errorf("hint = %q, want no mention of %q", hint, c.unwanted)
+			}
+			// The suggestion has to be pastable: a checked directory that is
+			// not the default has to come back with it.
+			if strings.Contains(hint, "alcatraz models download") && !strings.Contains(hint, dir) {
+				t.Errorf("hint = %q, want it to name the directory %q", hint, dir)
+			}
+		})
+	}
+}
+
+// TestModelsVerifyHintsTheWrongLevel covers the mistake the ModelsDir/ModelPath
+// split exists to prevent. Untreated it reads as a missing download, and acting
+// on that advice nests a second copy of the model inside the first.
+func TestModelsVerifyHintsTheWrongLevel(t *testing.T) {
+	dir := t.TempDir()
+	modelPath := models.Dir(dir, models.DefaultModel)
+
+	_, err := models.VerifyModelIn(models.DefaultModel, modelPath)
+	if err == nil {
+		t.Fatal("VerifyModelIn succeeded one level too deep")
+	}
+	hint := verifyHintFor(err, models.DefaultModel, modelPath)
+	if !strings.Contains(hint, "models directory") || !strings.Contains(hint, dir) {
+		t.Errorf("hint = %q, want it to name the parent %q", hint, dir)
+	}
+	if strings.Contains(hint, "alcatraz models download") {
+		t.Errorf("hint = %q, want it not to advise a download that would nest a second copy", hint)
+	}
+}
+
+// TestModelsVerifyWritesNothing runs the real verifier, not the stub: the
+// promise is that this command is safe against a read-only mount and against
+// the cache directory not existing yet, and only the real one can keep it.
+func TestModelsVerifyWritesNothing(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := verify(io.Discard, models.DefaultModel, dir); err == nil {
+		t.Fatal("verify succeeded against an empty models directory")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("verify created %d entries in the models directory", len(entries))
+	}
+}
+
+func TestModelsVerifyUnpinnedModel(t *testing.T) {
+	// No stub: an unpinned id has to be rejected before anything is read.
+	_, err := runModels([]string{"verify", "-model", "some-org/unpinned-model"})
+	if err == nil {
+		t.Fatal("runModels succeeded for an unpinned model, want an error")
+	}
+	for _, want := range []string{"some-org/unpinned-model", models.DefaultModel} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %v, want it to mention %q", err, want)
 		}
 	}
 }

@@ -11,9 +11,11 @@ import (
 	"path/filepath"
 )
 
-// hubBaseURL is the Hugging Face origin the pinned artifacts are fetched
-// from. It is a var so tests can point it at a local server.
-var hubBaseURL = "https://huggingface.co"
+// defaultOrigin is where a pinned artifact is fetched from unless its table
+// entry names somewhere else. Hugging Face stays the default because alcatraz
+// is public: an internal mirror as the default would make every outside user
+// fetch from a bucket Hoop pays the egress on, to no benefit of theirs.
+const defaultOrigin = "https://huggingface.co"
 
 // fileMatches reports whether path's contents hash to wantSHA256, keeping an
 // I/O failure separate from a false result. A file that cannot be read is not

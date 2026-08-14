@@ -22,6 +22,23 @@
 // observes a partial file, and the functions are safe to call from several
 // goroutines and several processes at once.
 //
+// # Origins
+//
+// Where the bytes come from is separate from what is accepted. Each pin table
+// entry may name an origin — the base URL its files hang off — and defaults to
+// Hugging Face; [Origin] reports the one a model would use, and
+// [EnsureModelFrom] overrides it for a single call, which is what points a
+// build at an internal bucket or an air-gapped cache without the table having
+// to know about that build. Only the base URL moves. The layout under it is
+// fixed at {origin}/{model}/resolve/{revision}/{file}, so a mirror is a bucket
+// keyed like the hub rather than a second code path.
+//
+// Moving the origin does not move the digests. Files are checked against the
+// same pinned sha256 and byte length wherever they were served from, so an
+// origin serving anything else fails exactly as a corrupted transfer does and
+// installs nothing. That is what makes a second origin safe to offer: an
+// origin is trusted for availability, never for content.
+//
 // # Directories
 //
 // Two different paths, consistently named. The models directory is the parent

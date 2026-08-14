@@ -90,9 +90,18 @@ Warns or blocks when the user's own prompt carries PII.
 |---|---|---|
 | `--dest` | the cache `ner.New` reads from | install into a self-contained directory instead |
 | `--model` | `KnightsAnalytics/distilbert-NER` | which pinned model to fetch |
+| `--origin` | the model's pinned origin | fetch from a mirror laid out like the hub |
 
-Both accept a single dash too; the double-dash form is what `ner`'s own error
+All accept a single dash too; the double-dash form is what `ner`'s own error
 messages tell you to run, so it is the spelling used throughout these docs.
+
+`--origin` points the fetch at an internal bucket or an air-gapped cache. Only
+the base URL moves — the layout under it stays
+`{origin}/{model}/resolve/{revision}/{file}` — so a mirror is a bucket keyed
+like the hub, not a different command. The pinned digests are unchanged, so a
+mirror serving anything else fails exactly as a corrupt transfer does and
+installs nothing. Run without the flag to see each pinned model's origin in the
+usage text; the origin actually used is printed before the fetch starts.
 
 See [Running NER without internet access](ner-offline.md) for the deployment
 patterns this command exists for.

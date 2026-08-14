@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -45,6 +46,17 @@ type modelArtifact struct {
 	// the tokenizer and the config files), so a directory produced here is
 	// interchangeable with one produced by hugot.DownloadModel.
 	files []modelFile
+	// origin is the base URL the files hang off, empty for defaultOrigin. It
+	// belongs to the model rather than to the downloader because the two move
+	// separately: a model Hoop trains and mirrors itself is not on the hub at
+	// all, while the ones that are should keep being fetched from it. Only the
+	// base URL moves — the path under it stays hub-shaped — so a mirror is a
+	// bucket laid out like the hub, not a second code path.
+	//
+	// Trusting an origin for availability is not trusting it for content. The
+	// digests below are what a file is accepted against wherever it came from,
+	// so the worst a wrong origin can do is fail the download.
+	origin string
 }
 
 // modelArtifacts holds every model EnsureModel can verify. Adding a model
@@ -123,6 +135,51 @@ func Revision(model string) string {
 	return modelArtifacts[model].revision
 }
 
+// Origin returns the base URL a model's files are fetched from — the one its
+// table entry names, or Hugging Face — or "" if the model is not pinned. It is
+// what a caller reports before a download; the origin argument of
+// [EnsureModelFrom] is what overrides it.
+func Origin(model string) string {
+	art, ok := modelArtifacts[model]
+	if !ok {
+		return ""
+	}
+	if art.origin != "" {
+		return art.origin
+	}
+	return defaultOrigin
+}
+
+// originFor applies the precedence — caller, then the pin table, then Hugging
+// Face — and rejects an origin the downloader cannot use.
+//
+// The check is here rather than at the call site because the failure it
+// prevents is unhelpful: an origin missing its scheme reaches net/http as a
+// relative URL and comes back as "unsupported protocol scheme """, which names
+// neither the origin nor the mistake.
+func originFor(art modelArtifact, override string) (string, error) {
+	origin := override
+	if origin == "" {
+		origin = art.origin
+	}
+	if origin == "" {
+		origin = defaultOrigin
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return "", fmt.Errorf("models: origin %q is not a URL: %w", origin, err)
+	}
+	if u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return "", fmt.Errorf("models: origin %q must be an http or https base URL, like %q", origin, defaultOrigin)
+	}
+	// A trailing slash would leave an empty path segment in the middle of the
+	// URL. Most servers collapse it; S3 does not, because the key is literal,
+	// and answers 404 for an object that is sitting right there. TrimRight,
+	// not TrimSuffix: an origin pasted out of a config or joined by hand can
+	// end in more than one, and two empty segments fail the same way as one.
+	return strings.TrimRight(origin, "/"), nil
+}
+
 // EnsureModel downloads model into the models directory ner.New reads from
 // and returns the local directory holding it, so a warm cache makes ner.New
 // network-free and the returned path can be handed straight to
@@ -150,12 +207,38 @@ func EnsureModel(ctx context.Context, model string) (string, error) {
 // subdirectory named after it, exactly as under the cache, so the layout is
 // the same wherever it is built.
 func EnsureModelIn(ctx context.Context, model, dir string) (string, error) {
+	return EnsureModelFrom(ctx, model, dir, "")
+}
+
+// EnsureModelFrom is EnsureModelIn fetching from an explicit origin: the base
+// URL the pinned paths hang off, in place of the one the pin table names. An
+// empty origin means the pinned one. It is for a build running against a
+// mirror — an internal bucket, an air-gapped cache — without the model's table
+// entry having to know about that build.
+//
+// Only the base URL moves. The layout under it is fixed at
+// {origin}/{model}/resolve/{revision}/{file}, so a mirror is a bucket keyed
+// like the hub rather than a second code path, and pointing at one is a flag
+// rather than a format.
+//
+// Moving where the bytes come from does not move what is accepted: files are
+// checked against the same pinned digests and byte lengths, so an origin
+// serving anything else fails exactly as a corrupted transfer does and
+// installs nothing. That is what makes a second origin safe to offer at all —
+// an origin is trusted for availability, never for content.
+func EnsureModelFrom(ctx context.Context, model, dir, origin string) (string, error) {
 	art, ok := modelArtifacts[model]
 	if !ok {
 		return "", fmt.Errorf("models: model %q has no pinned checksums, so it cannot be verified (pinned models: %s)",
 			model, strings.Join(PinnedModels(), ", "))
 	}
-	dir, err := ResolveDir(dir)
+	// Before ResolveDir, which creates directories: a rejected origin should
+	// not leave a models directory behind for a download that never ran.
+	origin, err := originFor(art, origin)
+	if err != nil {
+		return "", err
+	}
+	dir, err = ResolveDir(dir)
 	if err != nil {
 		return "", err
 	}
@@ -170,8 +253,8 @@ func EnsureModelIn(ctx context.Context, model, dir string) (string, error) {
 		if cachedFileValid(dest, f.sha256) {
 			continue
 		}
-		url := fmt.Sprintf("%s/%s/resolve/%s/%s", hubBaseURL, model, art.revision, f.path)
-		if err := download(ctx, url, dest, f.sha256, f.size, 0o644); err != nil {
+		src := fmt.Sprintf("%s/%s/resolve/%s/%s", origin, model, art.revision, f.path)
+		if err := download(ctx, src, dest, f.sha256, f.size, 0o644); err != nil {
 			return "", fmt.Errorf("models: downloading %s for model %s: %w", f.path, model, err)
 		}
 	}

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +14,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -61,6 +64,18 @@ func (h *fakeHub) totalHits() int {
 	return n
 }
 
+// paths returns the request paths the hub saw, sorted.
+func (h *fakeHub) paths() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]string, 0, len(h.hits))
+	for p := range h.hits {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // fileOfURL pulls the file path out of /{org}/{repo}/resolve/{rev}/{file}.
 func fileOfURL(p string) string {
 	parts := strings.SplitN(strings.TrimPrefix(p, "/"), "/", 5)
@@ -70,20 +85,19 @@ func fileOfURL(p string) string {
 	return parts[4]
 }
 
-// pinTestModel registers a model served by hub for the duration of the test
-// and points the downloader at it.
+// pinTestModel registers a model served by hub for the duration of the test.
+// The origin travels in the artifact, so a test model is pointed at a local
+// server the same way a real one would be pointed at a mirror.
 func pinTestModel(t *testing.T, hub *fakeHub, id string, art modelArtifact) {
 	t.Helper()
 	if _, exists := modelArtifacts[id]; exists {
 		t.Fatalf("test model id %q collides with a real pinned model", id)
 	}
+	if art.origin == "" {
+		art.origin = hub.URL
+	}
 	modelArtifacts[id] = art
-	prev := hubBaseURL
-	hubBaseURL = hub.URL
-	t.Cleanup(func() {
-		delete(modelArtifacts, id)
-		hubBaseURL = prev
-	})
+	t.Cleanup(func() { delete(modelArtifacts, id) })
 }
 
 // testModel is a two-file stand-in for a real model directory.
@@ -296,6 +310,136 @@ func TestEnsureModelInMissingFileLeavesNoPartial(t *testing.T) {
 	assertNoLeftovers(t, Dir(dir, id), "model.onnx")
 }
 
+func TestOrigin(t *testing.T) {
+	if got := Origin(DefaultModel); got != defaultOrigin {
+		t.Errorf("Origin(default) = %q, want the hub %q", got, defaultOrigin)
+	}
+	// alcatraz is a public repository. A model that names no origin has to
+	// keep coming from the hub, or every outside user starts fetching from
+	// infrastructure that exists for Hoop's own deployments.
+	if art := modelArtifacts[DefaultModel]; art.origin != "" {
+		t.Errorf("the default model pins origin %q; it should fall back to the hub", art.origin)
+	}
+	if got := Origin("some-org/unpinned-model"); got != "" {
+		t.Errorf("Origin(unpinned) = %q, want empty", got)
+	}
+
+	id, files, art := testModel(t)
+	art.origin = "https://mirror.internal/models"
+	pinTestModel(t, newFakeHub(t, files), id, art)
+	if got := Origin(id); got != art.origin {
+		t.Errorf("Origin(%s) = %q, want the pinned origin %q", id, got, art.origin)
+	}
+}
+
+// TestEnsureModelFromOverridesThePinnedOrigin is the case a build against an
+// internal mirror needs: the caller redirects the fetch without the model's
+// table entry knowing anything about that build.
+func TestEnsureModelFromOverridesThePinnedOrigin(t *testing.T) {
+	id, files, art := testModel(t)
+	pinned, mirror := newFakeHub(t, files), newFakeHub(t, files)
+	art.origin = pinned.URL
+	pinTestModel(t, pinned, id, art)
+
+	if _, err := EnsureModelFrom(context.Background(), id, t.TempDir(), mirror.URL); err != nil {
+		t.Fatalf("EnsureModelFrom: %v", err)
+	}
+	if got := mirror.totalHits(); got != len(files) {
+		t.Errorf("the mirror served %d files, want %d", got, len(files))
+	}
+	if got := pinned.totalHits(); got != 0 {
+		t.Errorf("the pinned origin was contacted %d times, want 0", got)
+	}
+}
+
+// TestEnsureModelFromKeepsTheHubLayout pins the shape of the URL under the
+// origin. A mirror is a bucket keyed like the hub, so the only difference
+// between origins must be the base URL — and trailing slashes on it must not
+// leak empty path segments into the key, which S3 would answer 404 for. One
+// is the copy-paste; more than one is the config value joined to a path that
+// already had it.
+func TestEnsureModelFromKeepsTheHubLayout(t *testing.T) {
+	for _, suffix := range []string{"", "/", "///"} {
+		t.Run("origin"+suffix, func(t *testing.T) {
+			id, files, art := testModel(t)
+			hub := newFakeHub(t, files)
+			pinTestModel(t, hub, id, art)
+
+			if _, err := EnsureModelFrom(context.Background(), id, t.TempDir(), hub.URL+suffix); err != nil {
+				t.Fatalf("EnsureModelFrom: %v", err)
+			}
+			want := []string{
+				"/" + id + "/resolve/" + art.revision + "/model.onnx",
+				"/" + id + "/resolve/" + art.revision + "/tokenizer.json",
+			}
+			sort.Strings(want)
+			if got := hub.paths(); !slices.Equal(got, want) {
+				t.Errorf("requested %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+// TestEnsureModelFromRejectsUnusableOrigin keeps the failure at the origin the
+// operator typed. Left to net/http, a missing scheme surfaces as
+// `unsupported protocol scheme ""`, which names neither.
+func TestEnsureModelFromRejectsUnusableOrigin(t *testing.T) {
+	id, files, art := testModel(t)
+	pinTestModel(t, newFakeHub(t, files), id, art)
+
+	for _, origin := range []string{
+		"huggingface.co",        // no scheme
+		"ftp://mirror.internal", // not a scheme we can fetch over
+		"file:///mnt/models",    // a mirror is fetched, not mounted
+		"https://",              // no host
+		"://mirror.internal",    // not a URL at all
+	} {
+		t.Run(origin, func(t *testing.T) {
+			// A models directory that does not exist yet: a rejected origin
+			// must not create one for a download that never ran.
+			dir := filepath.Join(t.TempDir(), "models")
+			_, err := EnsureModelFrom(context.Background(), id, dir, origin)
+			if err == nil {
+				t.Fatalf("EnsureModelFrom accepted origin %q", origin)
+			}
+			if !strings.Contains(err.Error(), origin) {
+				t.Errorf("error = %v, want it to name the origin %q", err, origin)
+			}
+			if _, err := os.Stat(dir); !errors.Is(err, fs.ErrNotExist) {
+				t.Errorf("a rejected origin created %s", dir)
+			}
+		})
+	}
+}
+
+// TestEnsureModelFromMirrorCannotSubstituteBytes is why a second origin is
+// safe to offer. An origin is trusted to have the file, never to decide what
+// is in it: the digests are the same wherever the bytes came from, so a
+// mirror serving something else fails exactly as a corrupt transfer does.
+func TestEnsureModelFromMirrorCannotSubstituteBytes(t *testing.T) {
+	id, files, art := testModel(t)
+	pinTestModel(t, newFakeHub(t, files), id, art)
+
+	// Same length as the pin, so the digest is what has to reject it.
+	swapped := map[string][]byte{}
+	for name, body := range files {
+		swapped[name] = []byte(strings.Repeat("z", len(body)))
+	}
+	mirror := newFakeHub(t, swapped)
+
+	dir := t.TempDir()
+	_, err := EnsureModelFrom(context.Background(), id, dir, mirror.URL)
+	if err == nil {
+		t.Fatal("EnsureModelFrom accepted a mirror serving other bytes")
+	}
+	if !strings.Contains(err.Error(), "sha256 mismatch") {
+		t.Errorf("error = %v, want it to name the sha256 mismatch", err)
+	}
+	for name := range files {
+		assertNoLeftovers(t, Dir(dir, id), name)
+	}
+}
+
 func TestEnsureModelUnpinnedModel(t *testing.T) {
 	_, err := EnsureModel(context.Background(), "some-org/unpinned-model")
 	if err == nil {
@@ -455,6 +599,17 @@ func TestPinnedArtifactsWellFormed(t *testing.T) {
 	for id, art := range modelArtifacts {
 		if !commit.MatchString(art.revision) {
 			t.Errorf("%s: revision %q is not a 40-hex commit sha", id, art.revision)
+		}
+		// An origin in the table is never validated at call time — Origin
+		// hands it straight back — so a malformed one has to fail here rather
+		// than as a transport error on somebody's build.
+		if art.origin != "" {
+			if _, err := originFor(art, ""); err != nil {
+				t.Errorf("%s: %v", id, err)
+			}
+			if strings.HasSuffix(art.origin, "/") {
+				t.Errorf("%s: origin %q has a trailing slash", id, art.origin)
+			}
 		}
 		seen := map[string]bool{}
 		for _, f := range art.files {

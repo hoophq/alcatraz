@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -21,9 +22,10 @@ import (
 //
 //	alcatraz models download [-dest dir] [-model id] [-origin url]
 //	alcatraz models verify   [-dir dir] [-model id]
+//	alcatraz models pins     [-model id]
 //
 // download is the one alcatraz command that touches the network, and it only
-// fetches the pinned URLs. Scanning never does, and neither does verify.
+// fetches the pinned URLs. Scanning never does, and neither do verify or pins.
 //
 // The heavy lifting is [models.EnsureModelFrom] and [models.VerifyModelIn],
 // which live in the root module precisely so these commands cost the CLI no
@@ -47,9 +49,11 @@ func runModels(args []string) (int, error) {
 		return runModelsDownload(rest)
 	case "verify":
 		return runModelsVerify(rest)
+	case "pins":
+		return runModelsPins(rest)
 	default:
 		modelsUsage(os.Stderr)
-		return 0, fmt.Errorf("models: unknown subcommand %q (want download or verify)", sub)
+		return 0, fmt.Errorf("models: unknown subcommand %q (want download, verify or pins)", sub)
 	}
 }
 
@@ -105,6 +109,77 @@ func runModelsVerify(rest []string) (int, error) {
 	// No signal handling, unlike download: this opens no socket and creates no
 	// file, so an interrupted run leaves nothing behind to clean up.
 	return verify(os.Stdout, *model, *dir)
+}
+
+func runModelsPins(rest []string) (int, error) {
+	fs := flag.NewFlagSet("models pins", flag.ContinueOnError)
+	model := fs.String("model", models.DefaultModel, "model id to describe")
+	if err := fs.Parse(rest); err != nil {
+		return 0, err
+	}
+	if fs.NArg() > 0 {
+		return 0, fmt.Errorf("models pins: unexpected argument %q", fs.Arg(0))
+	}
+	return pins(os.Stdout, *model)
+}
+
+// pinManifest is the wire format of "models pins", declared here rather than
+// reusing models.PinnedFile so an internal rename cannot break scripts.
+type pinManifest struct {
+	Model    string       `json:"model"`
+	Revision string       `json:"revision"`
+	Origin   string       `json:"origin"`
+	License  pinLicense   `json:"license"`
+	Files    []pinFileOut `json:"files"`
+}
+
+type pinLicense struct {
+	ID     string `json:"id"`
+	Source string `json:"source"`
+}
+
+type pinFileOut struct {
+	// Key is the path under an origin the downloader asks for, precomputed so
+	// a mirror does not keep its own copy of the layout.
+	Key    string `json:"key"`
+	Path   string `json:"path"`
+	Name   string `json:"name"`
+	SHA256 string `json:"sha256"`
+	Size   int64  `json:"size"`
+}
+
+// pins writes the pin table's entry for model as JSON, so a publisher mirrors
+// from the same source of truth the downloader verifies against.
+func pins(out io.Writer, model string) (int, error) {
+	files := models.PinnedFiles(model)
+	if files == nil {
+		return 0, fmt.Errorf("models pins: %q has no pinned checksums (pinned models: %s)",
+			model, strings.Join(models.PinnedModels(), ", "))
+	}
+	rev := models.Revision(model)
+	id, source := models.License(model)
+	m := pinManifest{
+		Model:    model,
+		Revision: rev,
+		Origin:   models.Origin(model),
+		License:  pinLicense{ID: id, Source: source},
+		Files:    make([]pinFileOut, 0, len(files)),
+	}
+	for _, f := range files {
+		m.Files = append(m.Files, pinFileOut{
+			Key:    fmt.Sprintf("%s/resolve/%s/%s", model, rev, f.Path),
+			Path:   f.Path,
+			Name:   f.Name,
+			SHA256: f.SHA256,
+			Size:   f.Size,
+		})
+	}
+	enc := json.NewEncoder(out)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(m); err != nil {
+		return 0, fmt.Errorf("models pins: writing output: %w", err)
+	}
+	return 0, nil
 }
 
 func download(ctx context.Context, out io.Writer, model, dest, origin string) (int, error) {
@@ -382,6 +457,7 @@ func humanSize(n int64) string {
 func modelsUsage(w io.Writer) {
 	fmt.Fprintln(w, "usage: alcatraz models download [-dest dir] [-model id] [-origin url]")
 	fmt.Fprintln(w, "       alcatraz models verify   [-dir dir] [-model id]")
+	fmt.Fprintln(w, "       alcatraz models pins     [-model id]")
 	fmt.Fprintln(w, "\nDownloads a NER model and verifies every file against its pinned sha256.")
 	fmt.Fprintln(w, "Without -dest it warms the cache ner.New reads from; with -dest it writes a")
 	fmt.Fprintln(w, "self-contained directory to copy into an image or a shared volume.")
@@ -394,6 +470,10 @@ func modelsUsage(w io.Writer) {
 	fmt.Fprintln(w, "three different problems that are worth telling apart. -dir is the models")
 	fmt.Fprintln(w, "directory, the same one download fills with -dest, and -dest is accepted")
 	fmt.Fprintln(w, "as an alias for it.")
+	fmt.Fprintln(w, "\npins writes the pin table's entry for a model as JSON — revision, license,")
+	fmt.Fprintln(w, "and every file with its digest, size and the key an origin must serve it")
+	fmt.Fprintln(w, "under. It exists so a publisher mirroring the model reads the table instead")
+	fmt.Fprintln(w, "of keeping a second copy of it that drifts.")
 	// Listed here, not only in a run's report: whether a model may be baked
 	// into an image we publish is a question that comes up before any fetch.
 	fmt.Fprintln(w, "\nverifiable models:")

@@ -118,6 +118,10 @@ type PinnedFile struct {
 	// are flattened to their base name on download, so this is what a
 	// caller finds on disk, not the path within the repository.
 	Name string
+	// Path is the file's path within the repository, which the fetch URL is
+	// built from. Every model pinned today is flat, so it matches Name, but a
+	// mirror needs Path: that is the key the downloader asks for.
+	Path string
 	// SHA256 is the hex digest EnsureModel verifies the file against.
 	SHA256 string
 	// Size is the exact byte length.
@@ -137,7 +141,7 @@ func PinnedFiles(model string) []PinnedFile {
 	for _, f := range art.files {
 		// path.Base, not filepath.Base: repository paths are always
 		// slash-separated, whatever the host OS uses.
-		out = append(out, PinnedFile{Name: path.Base(f.path), SHA256: f.sha256, Size: f.size})
+		out = append(out, PinnedFile{Name: path.Base(f.path), Path: f.path, SHA256: f.sha256, Size: f.size})
 	}
 	return out
 }

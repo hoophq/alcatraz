@@ -23,6 +23,7 @@ alcatraz hook claude-post [flags]    Claude Code PostToolUse output rewriter
 alcatraz hook claude-prompt [flags]  Claude Code UserPromptSubmit guard
 alcatraz models download [flags]     fetch and verify the optional NER model
 alcatraz models verify [flags]       re-check an already-seeded model directory
+alcatraz models pins [flags]         print a model's pin table entry as JSON
 alcatraz version                     print the version (also -version/--version)
 ```
 
@@ -138,6 +139,43 @@ accepted, so the two lines in a runbook differ only in the verb:
 alcatraz models download --dest /opt/alcatraz/models   # in the build
 alcatraz models verify   --dest /opt/alcatraz/models   # in the test that follows
 ```
+
+## Flags: `models pins`
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--model` | `KnightsAnalytics/distilbert-NER` | which pinned model to describe |
+
+Prints the pin table's entry as JSON — revision, origin, licence, and every
+file with its digest, size and the key the downloader requests:
+
+```json
+{
+  "model": "KnightsAnalytics/distilbert-NER",
+  "revision": "13a742d5ea02349d17e18f3755301282c9ee33f7",
+  "files": [
+    {
+      "key": "KnightsAnalytics/distilbert-NER/resolve/13a742d5.../config.json",
+      "path": "config.json",
+      "name": "config.json",
+      "sha256": "a2b1...",
+      "size": 925
+    }
+  ]
+}
+```
+
+This exists so a tool filling a mirror reads the same table the downloader
+verifies against, rather than keeping its own list that drifts. `key` is
+precomputed for the same reason: the layout lives in one place.
+
+```bash
+alcatraz models pins | jq -r '.files[].key'   # what the bucket has to hold
+```
+
+`hack/mirror-model.sh` drives the `aws` CLI from this output — it downloads and
+verifies locally, uploads write-once, then round-trips through `--origin` to
+prove the mirror actually serves what the downloader will accept.
 
 ## Model licences
 

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -271,6 +272,60 @@ func TestModelsReportsCarryTheLicense(t *testing.T) {
 				t.Errorf("%s does not report where %q is declared:\n%s", tc.name, license, got)
 			}
 		})
+	}
+}
+
+// decodePins runs "models pins" and decodes it, failing on either.
+func decodePins(t *testing.T, model string) pinManifest {
+	t.Helper()
+	var out bytes.Buffer
+	if code, err := pins(&out, model); err != nil || code != 0 {
+		t.Fatalf("pins(%q) = (%d, %v), want (0, nil)", model, code, err)
+	}
+	var got pinManifest
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("pins(%q) emitted invalid JSON: %v\n%s", model, err, out.String())
+	}
+	return got
+}
+
+func TestModelsPinsMatchesTheTable(t *testing.T) {
+	got := decodePins(t, models.DefaultModel)
+
+	id, source := models.License(models.DefaultModel)
+	if got.Model != models.DefaultModel || got.Revision != models.Revision(models.DefaultModel) ||
+		got.Origin != models.Origin(models.DefaultModel) || got.License.ID != id || got.License.Source != source {
+		t.Errorf("pins header = %+v, does not match the table", got)
+	}
+
+	want := models.PinnedFiles(models.DefaultModel)
+	if len(got.Files) != len(want) {
+		t.Fatalf("pins listed %d files, want %d", len(got.Files), len(want))
+	}
+	for i, f := range want {
+		// A publisher uploads by key and checks by digest, so both have to be
+		// right for the mirror to serve anything the downloader accepts.
+		g := got.Files[i]
+		if g.Name != f.Name || g.Path != f.Path || g.SHA256 != f.SHA256 || g.Size != f.Size {
+			t.Errorf("pins file %d = %+v, want %+v", i, g, f)
+		}
+		if wantKey := models.DefaultModel + "/resolve" + "/" + got.Revision + "/" + f.Path; g.Key != wantKey {
+			t.Errorf("pins file %d key = %q, want %q", i, g.Key, wantKey)
+		}
+	}
+}
+
+func TestModelsPinsRejectsAnUnpinnedModel(t *testing.T) {
+	var out bytes.Buffer
+	_, err := pins(&out, "some-org/unpinned-model")
+	if err == nil {
+		t.Fatal("pins succeeded for an unpinned model, want an error naming the pinned ones")
+	}
+	if !strings.Contains(err.Error(), models.DefaultModel) {
+		t.Errorf("error %q does not list the pinned models", err)
+	}
+	if out.Len() > 0 {
+		t.Errorf("pins wrote output for an unpinned model: %s", out.String())
 	}
 }
 

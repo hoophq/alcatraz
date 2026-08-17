@@ -68,10 +68,17 @@ jobs:
             echo "::error::the MODELS_BUCKET variable is not set on the models-publish environment"
             exit 1
           fi
+          # The origin drives the round-trip the script ends with, which is the
+          # real acceptance test: bytes in the bucket the downloader cannot
+          # consume are not a published model. The script leaves it optional,
+          # for a bucket filled before anything serves it; a publish from here
+          # has no such excuse.
+          if [ -z "$ORIGIN" ] && [ "$DRY_RUN" != "true" ]; then
+            echo "::error::the MODELS_ORIGIN variable is not set, so the upload could not be verified"
+            exit 1
+          fi
+
           args=(--bucket "$BUCKET")
-          # The origin drives the round-trip check the script ends with, which
-          # is the real acceptance test: bytes in the bucket that the
-          # downloader cannot consume are not a published model.
           if [ -n "$ORIGIN" ]; then args+=(--origin "$ORIGIN"); fi
           if [ -n "$MODEL" ]; then args+=(--model "$MODEL"); fi
           if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi

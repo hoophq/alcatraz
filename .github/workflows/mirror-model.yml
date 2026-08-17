@@ -1,0 +1,79 @@
+# Publishes a pinned model to the S3 mirror that serves `models download
+# -origin`. Manual by design: a model is mirrored when its pin lands, which is
+# a handful of times a year, and every upload is write-once.
+#
+# Credentials are assumed via OIDC and last minutes, so this repository — which
+# is public — never holds a key with write access to the bucket. The role's
+# trust policy is scoped to the models-publish environment, not to the repo, so
+# a job that skipped the reviewer gate cannot assume it.
+name: Mirror model
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Model id to mirror (blank = the pinned default)"
+        type: string
+      dry_run:
+        description: "List the keys and stop, without credentials"
+        type: boolean
+        default: true
+      force:
+        description: "Overwrite keys that already exist"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+
+# Two runs uploading the same revision would race on the head-object precheck.
+concurrency:
+  group: mirror-model
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    name: Mirror
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: models-publish
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      # A dry run reaches neither AWS nor the bucket, so it gets no credentials.
+      # The arn is a secret because it carries the account id; the rest stay
+      # variables, so a failed run shows which bucket and origin it used.
+      - name: Assume the publisher role
+        if: ${{ !inputs.dry_run }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.MODELS_PUBLISH_ROLE }}
+          aws-region: ${{ vars.MODELS_REGION || 'us-east-1' }}
+
+      - name: Mirror the model
+        env:
+          # Inputs go through the environment rather than into the script text:
+          # a workflow_dispatch input is a string someone typed.
+          BUCKET: ${{ vars.MODELS_BUCKET }}
+          ORIGIN: ${{ vars.MODELS_ORIGIN }}
+          MODEL: ${{ inputs.model }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          if [ -z "$BUCKET" ]; then
+            echo "::error::the MODELS_BUCKET variable is not set on the models-publish environment"
+            exit 1
+          fi
+          args=(--bucket "$BUCKET")
+          # The origin drives the round-trip check the script ends with, which
+          # is the real acceptance test: bytes in the bucket that the
+          # downloader cannot consume are not a published model.
+          if [ -n "$ORIGIN" ]; then args+=(--origin "$ORIGIN"); fi
+          if [ -n "$MODEL" ]; then args+=(--model "$MODEL"); fi
+          if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+          if [ "$FORCE" = "true" ]; then args+=(--force); fi
+          hack/mirror-model.sh "${args[@]}"

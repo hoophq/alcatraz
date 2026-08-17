@@ -193,6 +193,8 @@
 //
 //	-model string
 //		model id to describe (default "KnightsAnalytics/distilbert-NER")
+//	-list
+//		print every pinned model id, one per line, and exit
 //
 // Each file carries its digest, size and the key the downloader requests —
 // {model}/resolve/{revision}/{file} — so a tool populating a mirror uploads to

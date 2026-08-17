@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -326,6 +327,24 @@ func TestModelsPinsRejectsAnUnpinnedModel(t *testing.T) {
 	}
 	if out.Len() > 0 {
 		t.Errorf("pins wrote output for an unpinned model: %s", out.String())
+	}
+}
+
+// TestModelsPinsListIsLoopable pins the shape CI depends on: one id per line,
+// each of them a model "pins -model" then accepts.
+func TestModelsPinsListIsLoopable(t *testing.T) {
+	var out bytes.Buffer
+	if code, err := pinsList(&out); err != nil || code != 0 {
+		t.Fatalf("pinsList = (%d, %v), want (0, nil)", code, err)
+	}
+	got := strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
+	if want := models.PinnedModels(); !slices.Equal(got, want) {
+		t.Fatalf("pins -list = %q, want %q", got, want)
+	}
+	for _, id := range got {
+		if m := decodePins(t, id); m.Model != id {
+			t.Errorf("pins -model %q reported %q", id, m.Model)
+		}
 	}
 }
 

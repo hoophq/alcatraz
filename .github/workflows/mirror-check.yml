@@ -1,0 +1,69 @@
+# Fails a PR that pins a model the mirror does not serve yet. Without it the
+# gap surfaces later, in a production image build, far from the change that
+# caused it.
+#
+# The mirror is served publicly, so this needs no credentials: it is a HEAD per
+# pinned file against the same origin an image build would use.
+name: Mirror check
+
+on:
+  pull_request:
+    paths:
+      - "models/**"
+      - ".github/workflows/mirror-check.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mirror-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Mirror serves every pinned file
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Check the mirror
+        env:
+          ORIGIN: ${{ vars.MODELS_ORIGIN }}
+        run: |
+          if [ -z "$ORIGIN" ]; then
+            echo "::warning::MODELS_ORIGIN is not set, so there is no mirror to check."
+            exit 0
+          fi
+
+          alcatraz="$RUNNER_TEMP/alcatraz"
+          go build -o "$alcatraz" ./cmd/alcatraz
+
+          missing=0
+          for model in $("$alcatraz" models pins -list); do
+            echo "$model"
+            # Size, not just a 200: a truncated or half-uploaded object answers
+            # a HEAD perfectly well and then fails the digest check on use.
+            while IFS=$'\t' read -r key size; do
+              # -L and the tail: an origin may redirect large files to a CDN,
+              # as the hub does, and then two sets of headers come back.
+              got=$(curl -fsSIL --max-time 30 "$ORIGIN/$key" \
+                | awk 'tolower($1) == "content-length:" { print $2 }' | tail -1 | tr -d '\r') || got=""
+              if [ "$got" = "$size" ]; then
+                echo "  ok      $key"
+              else
+                echo "  MISSING $key"
+                echo "::error::$ORIGIN/$key is not served as $size bytes (got ${got:-no response})"
+                missing=$((missing + 1))
+              fi
+            done < <("$alcatraz" models pins -model "$model" | jq -r '.files[] | [.key, .size] | @tsv')
+          done
+
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::$missing file(s) are pinned but not mirrored. Run the \"Mirror model\" workflow before merging."
+            exit 1
+          fi

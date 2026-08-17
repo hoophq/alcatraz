@@ -114,13 +114,30 @@ func runModelsVerify(rest []string) (int, error) {
 func runModelsPins(rest []string) (int, error) {
 	fs := flag.NewFlagSet("models pins", flag.ContinueOnError)
 	model := fs.String("model", models.DefaultModel, "model id to describe")
+	list := fs.Bool("list", false, "print every pinned model id, one per line")
 	if err := fs.Parse(rest); err != nil {
 		return 0, err
 	}
 	if fs.NArg() > 0 {
 		return 0, fmt.Errorf("models pins: unexpected argument %q", fs.Arg(0))
 	}
+	if *list {
+		return pinsList(os.Stdout)
+	}
 	return pins(os.Stdout, *model)
+}
+
+// pinsList prints the pinned model ids, so a publisher can loop over the table
+// without carrying its own list of what is in it.
+func pinsList(out io.Writer) (int, error) {
+	w := &errWriter{w: out}
+	for _, id := range models.PinnedModels() {
+		w.printf("%s\n", id)
+	}
+	if w.err != nil {
+		return 0, fmt.Errorf("models pins: writing output: %w", w.err)
+	}
+	return 0, nil
 }
 
 // pinManifest is the wire format of "models pins", declared here rather than
@@ -457,7 +474,7 @@ func humanSize(n int64) string {
 func modelsUsage(w io.Writer) {
 	fmt.Fprintln(w, "usage: alcatraz models download [-dest dir] [-model id] [-origin url]")
 	fmt.Fprintln(w, "       alcatraz models verify   [-dir dir] [-model id]")
-	fmt.Fprintln(w, "       alcatraz models pins     [-model id]")
+	fmt.Fprintln(w, "       alcatraz models pins     [-model id] [-list]")
 	fmt.Fprintln(w, "\nDownloads a NER model and verifies every file against its pinned sha256.")
 	fmt.Fprintln(w, "Without -dest it warms the cache ner.New reads from; with -dest it writes a")
 	fmt.Fprintln(w, "self-contained directory to copy into an image or a shared volume.")

@@ -145,6 +145,7 @@ alcatraz models verify   --dest /opt/alcatraz/models   # in the test that follow
 | Flag | Default | Meaning |
 |---|---|---|
 | `--model` | `KnightsAnalytics/distilbert-NER` | which pinned model to describe |
+| `--list` | off | print every pinned model id, one per line, and exit |
 
 Prints the pin table's entry as JSON — revision, origin, licence, and every
 file with its digest, size and the key the downloader requests:
@@ -171,11 +172,18 @@ precomputed for the same reason: the layout lives in one place.
 
 ```bash
 alcatraz models pins | jq -r '.files[].key'   # what the bucket has to hold
+alcatraz models pins --list                   # every model that has to be mirrored
 ```
 
 `hack/mirror-model.sh` drives the `aws` CLI from this output — it downloads and
 verifies locally, uploads write-once, then round-trips through `--origin` to
 prove the mirror actually serves what the downloader will accept.
+
+Two workflows wrap it. `Mirror model` publishes, manually, assuming an AWS role
+via OIDC behind a reviewer gate. `Mirror check` runs on any PR touching
+`models/`, and fails it if the mirror does not already serve every pinned file
+at its pinned size — so a pin that nobody mirrored is caught there rather than
+in a later image build.
 
 ## Model licences
 

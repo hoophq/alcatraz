@@ -154,6 +154,11 @@ file with its digest, size and the key the downloader requests:
 {
   "model": "KnightsAnalytics/distilbert-NER",
   "revision": "13a742d5ea02349d17e18f3755301282c9ee33f7",
+  "origin": "https://huggingface.co",
+  "license": {
+    "id": "Apache-2.0",
+    "source": "https://huggingface.co/dslim/distilbert-NER"
+  },
   "files": [
     {
       "key": "KnightsAnalytics/distilbert-NER/resolve/13a742d5.../config.json",
@@ -165,6 +170,9 @@ file with its digest, size and the key the downloader requests:
   ]
 }
 ```
+
+`files` holds every pinned file; one is shown here, and the digest and key are
+elided for width.
 
 This exists so a tool filling a mirror reads the same table the downloader
 verifies against, rather than keeping its own list that drifts. `key` is

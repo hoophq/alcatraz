@@ -199,8 +199,8 @@
 // Each file carries its digest, size and the key the downloader requests —
 // {model}/resolve/{revision}/{file} — so a tool populating a mirror uploads to
 // the layout the fetch already expects instead of rebuilding it. That is what
-// hack/mirror-model.sh does. Output is always JSON; download prints the
-// human-readable manifest.
+// hack/mirror-model.sh does. The manifest is JSON, -list being the one
+// exception; download prints the human-readable version.
 //
 // The heavy lifting is [models.EnsureModelFrom] and [models.VerifyModelIn],
 // which live in the root module so these commands cost the CLI no

@@ -381,6 +381,48 @@ func TestEnsureModelFromKeepsTheHubLayout(t *testing.T) {
 	}
 }
 
+// TestPinnedFilePathIsTheKeyTheDownloaderRequests pins the contract a mirror
+// relies on: uploading to the key built from PinnedFile.Path is what the
+// downloader then requests. The fixture nests a file so Path and Name differ,
+// which no model pinned today does.
+func TestPinnedFilePathIsTheKeyTheDownloaderRequests(t *testing.T) {
+	files := map[string][]byte{
+		"model.onnx":          []byte("not really onnx"),
+		"onnx/tokenizer.json": []byte(`{"tokenizer":"nested"}`),
+	}
+	id := "alcatraz-test/nested-NER"
+	art := modelArtifact{
+		revision:      "1111111111111111111111111111111111111111",
+		license:       "Apache-2.0",
+		licenseSource: "https://example.invalid/nested",
+		files: []modelFile{
+			{path: "model.onnx", sha256: sum(files["model.onnx"]), size: int64(len(files["model.onnx"]))},
+			{path: "onnx/tokenizer.json", sha256: sum(files["onnx/tokenizer.json"]), size: int64(len(files["onnx/tokenizer.json"]))},
+		},
+	}
+	hub := newFakeHub(t, files)
+	pinTestModel(t, hub, id, art)
+
+	dir := t.TempDir()
+	modelPath, err := EnsureModelIn(context.Background(), id, dir)
+	if err != nil {
+		t.Fatalf("EnsureModelIn: %v", err)
+	}
+
+	var want []string
+	for _, f := range PinnedFiles(id) {
+		want = append(want, "/"+id+"/resolve/"+art.revision+"/"+f.Path)
+		// The nested file lands flat, so Name is what is on disk.
+		if _, err := os.Stat(filepath.Join(modelPath, f.Name)); err != nil {
+			t.Errorf("PinnedFile.Name %q is not what landed on disk: %v", f.Name, err)
+		}
+	}
+	sort.Strings(want)
+	if got := hub.paths(); !slices.Equal(got, want) {
+		t.Errorf("requested %v, want the keys built from PinnedFile.Path %v", got, want)
+	}
+}
+
 // TestEnsureModelFromRejectsUnusableOrigin keeps the failure at the origin the
 // operator typed. Left to net/http, a missing scheme surfaces as
 // `unsupported protocol scheme ""`, which names neither.
@@ -690,7 +732,7 @@ func TestPinnedFiles(t *testing.T) {
 		t.Fatalf("PinnedFiles returned %d files, want %d", len(got), len(art.files))
 	}
 	for i, f := range art.files {
-		want := PinnedFile{Name: path.Base(f.path), SHA256: f.sha256, Size: f.size}
+		want := PinnedFile{Name: path.Base(f.path), Path: f.path, SHA256: f.sha256, Size: f.size}
 		if got[i] != want {
 			t.Errorf("file %d = %+v, want %+v", i, got[i], want)
 		}

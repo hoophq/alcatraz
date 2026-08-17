@@ -11,6 +11,7 @@
 //	                                   UserPromptSubmit guard for Claude Code
 //	alcatraz models download [flags]   fetch a verified NER model
 //	alcatraz models verify [flags]     re-check an already-seeded model
+//	alcatraz models pins [flags]       print a model's pin table entry as JSON
 //	alcatraz version                   print the version (also -version, --version)
 //
 // Scanning is the network-free part, and it is the whole product: no
@@ -187,6 +188,19 @@
 // not the repository the files come from — that one is an ONNX conversion
 // published with no model card, inheriting Apache-2.0 from
 // dslim/distilbert-NER.
+//
+// alcatraz models pins writes the pin table's entry for a model as JSON:
+//
+//	-model string
+//		model id to describe (default "KnightsAnalytics/distilbert-NER")
+//	-list
+//		print every pinned model id, one per line, and exit
+//
+// Each file carries its digest, size and the key the downloader requests —
+// {model}/resolve/{revision}/{file} — so a tool populating a mirror uploads to
+// the layout the fetch already expects instead of rebuilding it. That is what
+// hack/mirror-model.sh does. The manifest is JSON, -list being the one
+// exception; download prints the human-readable version.
 //
 // The heavy lifting is [models.EnsureModelFrom] and [models.VerifyModelIn],
 // which live in the root module so these commands cost the CLI no

@@ -23,6 +23,7 @@ alcatraz hook claude-post [flags]    Claude Code PostToolUse output rewriter
 alcatraz hook claude-prompt [flags]  Claude Code UserPromptSubmit guard
 alcatraz models download [flags]     fetch and verify the optional NER model
 alcatraz models verify [flags]       re-check an already-seeded model directory
+alcatraz models pins [flags]         print a model's pin table entry as JSON
 alcatraz version                     print the version (also -version/--version)
 ```
 
@@ -138,6 +139,59 @@ accepted, so the two lines in a runbook differ only in the verb:
 alcatraz models download --dest /opt/alcatraz/models   # in the build
 alcatraz models verify   --dest /opt/alcatraz/models   # in the test that follows
 ```
+
+## Flags: `models pins`
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--model` | `KnightsAnalytics/distilbert-NER` | which pinned model to describe |
+| `--list` | off | print every pinned model id, one per line, and exit |
+
+Prints the pin table's entry as JSON — revision, origin, licence, and every
+file with its digest, size and the key the downloader requests:
+
+```json
+{
+  "model": "KnightsAnalytics/distilbert-NER",
+  "revision": "13a742d5ea02349d17e18f3755301282c9ee33f7",
+  "origin": "https://huggingface.co",
+  "license": {
+    "id": "Apache-2.0",
+    "source": "https://huggingface.co/dslim/distilbert-NER"
+  },
+  "files": [
+    {
+      "key": "KnightsAnalytics/distilbert-NER/resolve/13a742d5.../config.json",
+      "path": "config.json",
+      "name": "config.json",
+      "sha256": "a2b1...",
+      "size": 925
+    }
+  ]
+}
+```
+
+`files` holds every pinned file; one is shown here, and the digest and key are
+elided for width.
+
+This exists so a tool filling a mirror reads the same table the downloader
+verifies against, rather than keeping its own list that drifts. `key` is
+precomputed for the same reason: the layout lives in one place.
+
+```bash
+alcatraz models pins | jq -r '.files[].key'   # what the bucket has to hold
+alcatraz models pins --list                   # every model that has to be mirrored
+```
+
+`hack/mirror-model.sh` drives the `aws` CLI from this output — it downloads and
+verifies locally, uploads write-once, then round-trips through `--origin` to
+prove the mirror actually serves what the downloader will accept.
+
+Two workflows wrap it. `Mirror model` publishes, manually, assuming an AWS role
+via OIDC behind a reviewer gate. `Mirror check` runs on any PR touching
+`models/`, and fails it if the mirror does not already serve every pinned file
+at its pinned size — so a pin that nobody mirrored is caught there rather than
+in a later image build.
 
 ## Model licences
 

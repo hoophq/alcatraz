@@ -75,6 +75,28 @@ spec:
         - { name: alcatraz-models, mountPath: /models }
 ```
 
+## Or serve the model from your own mirror
+
+When the build can reach an internal bucket but not huggingface.co, point
+`--origin` at it. Only the base URL moves; the layout under it stays
+`{origin}/{model}/resolve/{revision}/{file}`, and the pinned digests are
+unchanged, so a mirror serving the wrong bytes fails exactly as a corrupt
+transfer does.
+
+```bash
+alcatraz models download --dest /opt/alcatraz/models \
+  --origin https://models.internal/alcatraz
+```
+
+To fill that bucket, `hack/mirror-model.sh` reads `alcatraz models pins` for
+the file list and keys, verifies every file locally before uploading, and
+finishes by downloading the result back through the public origin.
+
+```bash
+hack/mirror-model.sh --bucket s3://your-bucket/alcatraz \
+                     --origin https://models.internal/alcatraz
+```
+
 ## Wiring the result into the config
 
 The command prints two paths one directory apart, and they are not

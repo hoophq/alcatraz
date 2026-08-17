@@ -39,6 +39,9 @@ jobs:
             echo "::warning::MODELS_ORIGIN is not set, so there is no mirror to check."
             exit 0
           fi
+          # The downloader trims these itself, so an origin that works there has
+          # to work here: a trailing slash asks S3 for a key starting with one.
+          ORIGIN="${ORIGIN%"${ORIGIN##*[!/]}"}"
 
           alcatraz="$RUNNER_TEMP/alcatraz"
           go build -o "$alcatraz" ./cmd/alcatraz

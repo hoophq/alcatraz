@@ -19,8 +19,8 @@ usage() {
 usage: hack/mirror-model.sh --bucket s3://bucket/prefix --origin https://host/prefix [options]
 
   --bucket   s3 destination, optionally with a key prefix (required)
-  --origin   public base URL the bucket is served under, used for the
-             round-trip verify (required unless --dry-run)
+  --origin   public base URL the bucket is served under. Given, the upload is
+             followed by a download through it; omitted, that check is skipped
   --model    model id to mirror (default: the pinned default)
   --dry-run  print what would be uploaded and exit
   --force    overwrite keys that already exist
@@ -54,7 +54,6 @@ die() {
 }
 
 [ -n "$bucket" ] || die "--bucket is required"
-[ -n "$origin" ] || [ "$dry_run" = true ] || die "--origin is required (or pass --dry-run)"
 
 for tool in aws jq; do
 	command -v "$tool" >/dev/null || die "$tool is not installed"
@@ -134,7 +133,16 @@ echo "uploaded $uploaded, skipped $skipped"
 
 # The upload is only useful if the downloader can consume it, and that is a
 # different question from whether the bytes arrived: a wrong prefix, a missing
-# public-read policy or a stray redirect all pass the upload and fail here.
+# read policy or a stray redirect all pass the upload and fail here. It is
+# skippable because the bucket is often filled before anything serves it.
+if [ -z "$origin" ]; then
+	echo
+	echo "no --origin given, skipping the round-trip verify. Once the bucket is"
+	echo "served, check it with:"
+	echo "  alcatraz models download --model $model --origin <base url> --dest /tmp/roundtrip"
+	exit 0
+fi
+
 echo
 echo "verifying round trip from $origin"
 "$alcatraz" models download --dest "$work/roundtrip" --model "$model" --origin "$origin"

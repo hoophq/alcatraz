@@ -70,3 +70,34 @@ jobs:
             echo "::error::$missing file(s) are pinned but not mirrored. Run the \"Mirror model\" workflow before merging."
             exit 1
           fi
+
+          # The current/ alias has its own consumers — image builds that curl it
+          # instead of running the downloader — so a pin landing without a
+          # republish breaks them the same way, just somewhere else.
+          echo
+          echo "current/"
+          served="$RUNNER_TEMP/served-checksums.txt"
+          if ! curl -fsSL --max-time 30 "$ORIGIN/current/checksums.txt" -o "$served"; then
+            echo "::error::$ORIGIN/current/checksums.txt is not served. Run the \"Mirror model\" workflow before merging."
+            exit 1
+          fi
+
+          # Both directions, because the manifest is a closed list: a line
+          # missing means a pin landed without a republish, an extra one means
+          # the alias still offers something no longer pinned, and a consumer
+          # fetches every line it finds either way. Sorted, so neither side
+          # depends on the order the other happened to write.
+          expected="$RUNNER_TEMP/expected-checksums.txt"
+          : >"$expected"
+          for model in $("$alcatraz" models pins -list); do
+            dir="$(echo "$model" | tr '/' '_')"
+            "$alcatraz" models pins -model "$model" \
+              | jq -r --arg d "$dir" '.files[] | "\(.sha256)  \($d)/\(.name)"' >>"$expected"
+          done
+
+          if diff -u --label pinned --label served <(sort "$expected") <(sort "$served"); then
+            echo "  ok      $(grep -c . "$expected") file(s)"
+          else
+            echo "::error::the current/ alias does not match the pin table. Run the \"Mirror model\" workflow before merging."
+            exit 1
+          fi

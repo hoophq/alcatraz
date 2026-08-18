@@ -191,9 +191,22 @@ while read -r pinned; do
 	pinned_pins="$work/pins-$pinned_dirname.json"
 	"$alcatraz" models pins -model "$pinned" >"$pinned_pins"
 
-	probe="$(jq -r '.files[0].name' "$pinned_pins")"
-	aws s3api head-object --bucket "$bucket_name" \
-		--key "$alias_prefix/$pinned_dirname/$probe" >/dev/null 2>&1 || continue
+	# Every file, at its pinned size, not a probe of the first one: a run
+	# that died mid-copy leaves an object in place, and listing the rest
+	# would advertise keys that are not there. Consumers read this as
+	# authoritative and fetch every line.
+	complete=true
+	while IFS=$'\t' read -r name size; do
+		got="$(aws s3api head-object --bucket "$bucket_name" \
+			--key "$alias_prefix/$pinned_dirname/$name" \
+			--query ContentLength --output text 2>/dev/null)" || got=""
+		[ "$got" = "$size" ] || { complete=false; break; }
+	done < <(jq -r '.files[] | [.name, .size] | @tsv' "$pinned_pins")
+
+	if [ "$complete" != true ]; then
+		echo "  omit   $pinned_dirname (not complete under $alias_prefix/)"
+		continue
+	fi
 
 	jq -r --arg d "$pinned_dirname" '.files[] | "\(.sha256)  \($d)/\(.name)"' "$pinned_pins" >>"$checksums"
 done < <("$alcatraz" models pins -list)

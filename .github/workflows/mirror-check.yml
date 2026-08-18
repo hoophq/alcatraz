@@ -73,30 +73,31 @@ jobs:
 
           # The current/ alias has its own consumers — image builds that curl it
           # instead of running the downloader — so a pin landing without a
-          # republish breaks them the same way, just somewhere else. Its
-          # manifest carries the assertion: every pinned digest has to be in it.
+          # republish breaks them the same way, just somewhere else.
           echo
           echo "current/"
           served="$RUNNER_TEMP/served-checksums.txt"
           if ! curl -fsSL --max-time 30 "$ORIGIN/current/checksums.txt" -o "$served"; then
-            echo "::warning::$ORIGIN/current/checksums.txt is not served yet, so the alias was not checked."
-            exit 0
+            echo "::error::$ORIGIN/current/checksums.txt is not served. Run the \"Mirror model\" workflow before merging."
+            exit 1
           fi
 
-          stale=0
+          # Both directions, because the manifest is a closed list: a line
+          # missing means a pin landed without a republish, an extra one means
+          # the alias still offers something no longer pinned, and a consumer
+          # fetches every line it finds either way. Sorted, so neither side
+          # depends on the order the other happened to write.
+          expected="$RUNNER_TEMP/expected-checksums.txt"
+          : >"$expected"
           for model in $("$alcatraz" models pins -list); do
             dir="$(echo "$model" | tr '/' '_')"
-            while IFS=$'\t' read -r name sha; do
-              if grep -qxF "$sha  $dir/$name" "$served"; then
-                echo "  ok      current/$dir/$name"
-              else
-                echo "  STALE   current/$dir/$name"
-                stale=$((stale + 1))
-              fi
-            done < <("$alcatraz" models pins -model "$model" | jq -r '.files[] | [.name, .sha256] | @tsv')
+            "$alcatraz" models pins -model "$model" \
+              | jq -r --arg d "$dir" '.files[] | "\(.sha256)  \($d)/\(.name)"' >>"$expected"
           done
 
-          if [ "$stale" -ne 0 ]; then
-            echo "::error::the current/ alias does not list $stale pinned file(s) at the pinned digest. Run the \"Mirror model\" workflow before merging."
+          if diff -u --label pinned --label served <(sort "$expected") <(sort "$served"); then
+            echo "  ok      $(grep -c . "$expected") file(s)"
+          else
+            echo "::error::the current/ alias does not match the pin table. Run the \"Mirror model\" workflow before merging."
             exit 1
           fi

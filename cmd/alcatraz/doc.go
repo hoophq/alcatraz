@@ -202,6 +202,11 @@
 // hack/mirror-model.sh does. The manifest is JSON, -list being the one
 // exception; download prints the human-readable version.
 //
+// That script also publishes a current/ alias: the same files under the names
+// download writes on disk, with a checksums.txt in sha256sum format beside
+// them. It is for consumers that have curl and no Go toolchain, and it is what
+// keeps a revision and six digests out of their build files.
+//
 // The heavy lifting is [models.EnsureModelFrom] and [models.VerifyModelIn],
 // which live in the root module so these commands cost the CLI no
 // dependencies: the ONNX runtime stays behind the ner module.

@@ -13,8 +13,8 @@
 # The file list, digests and keys all come from "alcatraz models pins", so this
 # script never carries a second copy of the pin table.
 #
-#   hack/mirror-model.sh --bucket s3://hoop-models/alcatraz \
-#                        --origin https://models.hoop.dev/alcatraz
+#   hack/mirror-model.sh --bucket s3://hoopartifacts/alcatraz \
+#                        --origin https://hoopartifacts.s3.us-east-1.amazonaws.com/alcatraz
 #
 # Credentials come from the ambient AWS config; none belong in this repository.
 # In CI, assume a role via OIDC rather than issuing a long-lived key with write

@@ -59,7 +59,11 @@ jobs:
           # Inputs go through the environment rather than into the script text:
           # a workflow_dispatch input is a string someone typed.
           BUCKET: ${{ vars.MODELS_BUCKET }}
-          ORIGIN: ${{ vars.MODELS_ORIGIN }}
+          # The read address carries a default and the write address does not,
+          # deliberately. A wrong origin fails loudly at the round trip the
+          # script ends with, while a default write target is how a fork
+          # publishes to the real bucket by accident.
+          ORIGIN: ${{ vars.MODELS_ORIGIN || 'https://hoopartifacts.s3.us-east-1.amazonaws.com/alcatraz' }}
           MODEL: ${{ inputs.model }}
           DRY_RUN: ${{ inputs.dry_run }}
           FORCE: ${{ inputs.force }}
@@ -68,18 +72,13 @@ jobs:
             echo "::error::the MODELS_BUCKET variable is not set on the models-publish environment"
             exit 1
           fi
-          # The origin drives the round-trip the script ends with, which is the
+
+          # The origin drives the round trip the script ends with, which is the
           # real acceptance test: bytes in the bucket the downloader cannot
           # consume are not a published model. The script leaves it optional,
           # for a bucket filled before anything serves it; a publish from here
-          # has no such excuse.
-          if [ -z "$ORIGIN" ] && [ "$DRY_RUN" != "true" ]; then
-            echo "::error::the MODELS_ORIGIN variable is not set, so the upload could not be verified"
-            exit 1
-          fi
-
-          args=(--bucket "$BUCKET")
-          if [ -n "$ORIGIN" ]; then args+=(--origin "$ORIGIN"); fi
+          # has no such excuse, so it is always passed.
+          args=(--bucket "$BUCKET" --origin "$ORIGIN")
           if [ -n "$MODEL" ]; then args+=(--model "$MODEL"); fi
           if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
           if [ "$FORCE" = "true" ]; then args+=(--force); fi

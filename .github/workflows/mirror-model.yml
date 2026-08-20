@@ -59,15 +59,13 @@ jobs:
           # Inputs go through the environment rather than into the script text:
           # a workflow_dispatch input is a string someone typed.
           BUCKET: ${{ vars.MODELS_BUCKET }}
-          # The read address carries a default and the write address does not,
-          # deliberately. A wrong origin fails loudly at the round trip the
-          # script ends with, while a default write target is how a fork
-          # publishes to the real bucket by accident.
-          ORIGIN: ${{ vars.MODELS_ORIGIN || 'https://hoopartifacts.s3.us-east-1.amazonaws.com/alcatraz' }}
+          ORIGIN: ${{ vars.MODELS_ORIGIN }}
           MODEL: ${{ inputs.model }}
           DRY_RUN: ${{ inputs.dry_run }}
           FORCE: ${{ inputs.force }}
         run: |
+          . hack/mirror-target.env
+
           if [ -z "$BUCKET" ]; then
             echo "::error::the MODELS_BUCKET variable is not set on the models-publish environment"
             exit 1
@@ -75,9 +73,22 @@ jobs:
 
           # The origin drives the round trip the script ends with, which is the
           # real acceptance test: bytes in the bucket the downloader cannot
-          # consume are not a published model. The script leaves it optional,
-          # for a bucket filled before anything serves it; a publish from here
-          # has no such excuse, so it is always passed.
+          # consume are not a published model.
+          #
+          # Falling back to the built-in origin is only sound for the bucket it
+          # actually fronts. Verified through an origin pointing somewhere else
+          # this run would pass on someone else's copy of the same pinned model
+          # — same digests, same manifest — and report success for an upload no
+          # consumer can see. A bucket the pair does not cover has to say where
+          # it is served from.
+          if [ -z "$ORIGIN" ]; then
+            if [ "$BUCKET" != "$MIRROR_BUCKET" ]; then
+              echo "::error::MODELS_BUCKET is $BUCKET, which $MIRROR_ORIGIN does not serve. Set MODELS_ORIGIN to the base URL that bucket is published under, or point MODELS_BUCKET at $MIRROR_BUCKET."
+              exit 1
+            fi
+            ORIGIN="$MIRROR_ORIGIN"
+          fi
+
           args=(--bucket "$BUCKET" --origin "$ORIGIN")
           if [ -n "$MODEL" ]; then args+=(--model "$MODEL"); fi
           if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi

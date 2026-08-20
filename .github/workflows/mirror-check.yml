@@ -33,13 +33,16 @@ jobs:
 
       - name: Check the mirror
         env:
+          ORIGIN: ${{ vars.MODELS_ORIGIN }}
+        run: |
           # Defaulted rather than required. This job runs on a pull request and
           # so has no environment, meaning a variable scoped to models-publish
           # reads empty here — and a check that skips itself when its origin is
           # missing is a check that passes without checking anything. The
           # variable remains, as an override for a fork or a private mirror.
-          ORIGIN: ${{ vars.MODELS_ORIGIN || 'https://hoopartifacts.s3.us-east-1.amazonaws.com/alcatraz' }}
-        run: |
+          . hack/mirror-target.env
+          ORIGIN="${ORIGIN:-$MIRROR_ORIGIN}"
+
           # The downloader trims these itself, so an origin that works there has
           # to work here: a trailing slash asks S3 for a key starting with one.
           ORIGIN="${ORIGIN%"${ORIGIN##*[!/]}"}"

@@ -106,7 +106,11 @@ bucket_path="${bucket#s3://}"
 bucket_name="${bucket_path%%/*}"
 prefix="${bucket_path#"$bucket_name"}"
 prefix="${prefix#/}"
-prefix="${prefix%/}"
+# Every trailing slash, not one. S3 keys are literal: "p//key" is a different
+# object from "p/key", and one no consumer will ever ask for. models.originFor
+# trims the origin the same way and for the same reason — a value pasted out of
+# a config, or joined to a path that already ended in one, can carry several.
+prefix="${prefix%"${prefix##*[!/]}"}"
 
 # The alias reproduces the on-disk layout, so its directory name is the model
 # id with "/" replaced by "_", matching models.Dir and hugot.

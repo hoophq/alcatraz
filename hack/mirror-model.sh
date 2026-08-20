@@ -13,8 +13,13 @@
 # The file list, digests and keys all come from "alcatraz models pins", so this
 # script never carries a second copy of the pin table.
 #
-#   hack/mirror-model.sh --bucket s3://hoop-models/alcatraz \
-#                        --origin https://models.hoop.dev/alcatraz
+#   hack/mirror-model.sh --bucket s3://bucket/prefix \
+#                        --origin https://host/prefix
+#
+# Deliberately generic: this script knows nothing about Hoop's buckets, and
+# both addresses arrive on the command line. The pair the workflows publish to
+# is defined once, in hack/mirror-target.env — the only place either URL is
+# written down, so changing where the mirror lives is a one-line edit.
 #
 # Credentials come from the ambient AWS config; none belong in this repository.
 # In CI, assume a role via OIDC rather than issuing a long-lived key with write
@@ -114,6 +119,10 @@ echo "license: $license"
 echo "source:  $source_origin"
 echo "dest:    s3://$bucket_name/${prefix:+$prefix/}"
 echo "alias:   s3://$bucket_name/$alias_prefix/"
+# Printed beside the two write addresses, not only where it is used at the
+# end: the read address is the one nothing else in this script can derive, and
+# a pair that does not correspond is only obvious when you can see both.
+echo "verify:  ${origin:-(skipped, no --origin given)}"
 echo
 
 if [ "$dry_run" = true ]; then
@@ -248,6 +257,26 @@ echo "verifying $origin/current"
 alias_dir="$work/alias"
 mkdir -p "$alias_dir"
 curl -fsSL "$origin/current/checksums.txt" -o "$alias_dir/checksums.txt"
+
+# Everything else here proves the bytes are servable. This proves they are the
+# bytes *this run* wrote. An origin fronting some other bucket answers every
+# request above perfectly well, out of a mirror somebody else filled: the model
+# is the same pinned revision, so the digests match and the round trip is
+# green while the upload went somewhere no consumer reads.
+#
+# The manifest is the one artifact rewritten unconditionally on every run, and
+# it is built from what a head-object found in *this* bucket — so a bucket that
+# did not receive the upload yields a manifest that disagrees, an empty one in
+# the case that matters, a fresh prefix nobody has published to yet.
+#
+# It cannot catch an origin serving a byte-identical mirror of the same pins.
+# Nothing cheap can: that failure is indistinguishable from success by content
+# alone. The workflow closes it from the other side, by refusing an origin that
+# is not paired with the bucket (hack/mirror-target.env).
+if ! diff -u --label uploaded --label served "$checksums" "$alias_dir/checksums.txt"; then
+	die "$origin/current/checksums.txt is not the manifest this run uploaded to s3://$bucket_name/$alias_prefix/: --origin does not serve --bucket"
+fi
+
 while read -r _ file; do
 	mkdir -p "$alias_dir/$(dirname "$file")"
 	curl -fsSL "$origin/current/$file" -o "$alias_dir/$file"

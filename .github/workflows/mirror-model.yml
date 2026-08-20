@@ -81,8 +81,13 @@ jobs:
           # — same digests, same manifest — and report success for an upload no
           # consumer can see. A bucket the pair does not cover has to say where
           # it is served from.
+          #
+          # Compared with trailing slashes stripped, the same way the script
+          # strips them off the prefix it derives: "s3://bucket/p/" and
+          # "s3://bucket/p" name one location, and a pairing check that
+          # disagrees would reject the very bucket it is meant to bless.
           if [ -z "$ORIGIN" ]; then
-            if [ "$BUCKET" != "$MIRROR_BUCKET" ]; then
+            if [ "${BUCKET%"${BUCKET##*[!/]}"}" != "${MIRROR_BUCKET%"${MIRROR_BUCKET##*[!/]}"}" ]; then
               echo "::error::MODELS_BUCKET is $BUCKET, which $MIRROR_ORIGIN does not serve. Set MODELS_ORIGIN to the base URL that bucket is published under, or point MODELS_BUCKET at $MIRROR_BUCKET."
               exit 1
             fi

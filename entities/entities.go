@@ -32,6 +32,9 @@ const (
 	UKNINO = "UK_NINO"
 )
 
+// China.
+const CNIDCard = "CN_ID_CARD"
+
 // Australia.
 const (
 	AUTFN      = "AU_TFN"

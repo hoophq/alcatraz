@@ -72,7 +72,7 @@ func ExampleAll() {
 	fmt.Println(len(recognizers.All()), "built-ins,", len(reg.Recognizers("pt", nil)), "registered")
 	fmt.Println(reg.SupportedEntities("pt"))
 	// Output:
-	// 52 built-ins, 13 registered
+	// 53 built-ins, 13 registered
 	// [BR_CEP BR_CNH BR_CNPJ BR_CNS BR_CPF BR_PIS BR_PIX_KEY BR_PLACA BR_RENAVAM BR_RG BR_TITULO_ELEITORAL EMAIL_ADDRESS]
 }
 

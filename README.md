@@ -39,7 +39,7 @@ library you `go get` and invoke in-process.
 
 ## Why Alcatraz
 
-- ✅ **Checksum-verified.** 30 of the 53 recognizers carry a real checksum
+- ✅ **Checksum-verified.** 26 of the 53 recognizers carry a real checksum
   validator: Luhn (credit cards), ISO 7064 mod-97 (IBAN), Verhoeff (Aadhaar),
   the Brazilian mod-11 schemes (CPF, CNPJ, CNH, PIS), and more. A 16-digit
   number that fails Luhn is *dropped*, not flagged.

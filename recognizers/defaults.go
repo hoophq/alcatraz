@@ -20,7 +20,7 @@ func LoadDefaults(reg *analyzer.Registry, language string) {
 func All() []analyzer.Recognizer {
 	groups := [][]analyzer.Recognizer{
 		generic(), unitedStates(), unitedKingdom(), australia(),
-		india(), italy(), spain(), singapore(), brazil(), other(),
+		india(), italy(), spain(), singapore(), brazil(), china(), other(),
 	}
 	var recs []analyzer.Recognizer
 	for _, g := range groups {
@@ -79,4 +79,8 @@ func brazil() []analyzer.Recognizer {
 
 func other() []analyzer.Recognizer {
 	return []analyzer.Recognizer{PLPESEL(), KRRRN(), FIPersonalCode(), THTNIN()}
+}
+
+func china() []analyzer.Recognizer {
+	return []analyzer.Recognizer{CNIDCard()}
 }

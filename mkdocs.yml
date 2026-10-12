@@ -56,6 +56,7 @@ nav:
   - Reference:
       - Design & limits: design.md
       - Benchmarks: benchmarks.md
+      - Complexity & allocations: analyses.md
       - Tests & CI: testing.md
       - API (pkg.go.dev): https://pkg.go.dev/github.com/hoophq/alcatraz
 

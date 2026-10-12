@@ -6,7 +6,12 @@ text  →  recognizers (regex)  →  validators (checksum)  →  context scoring
 
 The pipeline:
 
-1. Every applicable recognizer runs its regexes over the text.
+1. Every applicable recognizer runs its regexes over the text. Two
+   shortcuts keep this cheap on short, mostly-prose input: a pattern whose
+   matches must contain a byte class the text lacks (a digit, an `@`, a
+   `:`) is skipped without a scan, and patterns that share a regex source
+   (`\b\d{11}\b` backs six national identifiers) share one scan per call.
+   Neither changes what is detected.
 2. The engine scores a matched span at the pattern's base confidence; a
    validator then either promotes it to `1.0` (verified) or drops it (failed
    checksum).

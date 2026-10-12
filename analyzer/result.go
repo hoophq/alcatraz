@@ -1,6 +1,6 @@
 package analyzer
 
-import "sort"
+import "slices"
 
 // Score bounds for a detection. A score is a confidence in [MinScore, MaxScore].
 const (
@@ -57,8 +57,19 @@ func (r Result) EqualIndices(other Result) bool {
 // keeping the highest-scoring span and dropping any span contained within a
 // kept one. Zero-score results are discarded. Detections of different entity
 // types never suppress each other. The result is sorted by score (descending),
-// then start offset (ascending), then length (descending).
+// then start offset (ascending), then length (descending). With fewer than two
+// results the input slice itself is returned.
 func RemoveDuplicates(results []Result) []Result {
+	// Zero or one result needs no comparison and no sort: a lone result is
+	// returned as is (or dropped when zero-scored) without allocating. This
+	// is the common case for a short text, where the closure and swapper
+	// the sort below would build used to be most of the call's allocations.
+	if len(results) < 2 {
+		if len(results) == 1 && results[0].Score == 0.0 {
+			return results[:0]
+		}
+		return results
+	}
 	filtered := make([]Result, 0, len(results))
 	for _, r := range results {
 		if r.Score == 0.0 {
@@ -91,14 +102,17 @@ func RemoveDuplicates(results []Result) []Result {
 		filtered = append(kept, r)
 	}
 
-	sort.SliceStable(filtered, func(i, j int) bool {
-		if filtered[i].Score != filtered[j].Score {
-			return filtered[i].Score > filtered[j].Score
+	slices.SortStableFunc(filtered, func(a, b Result) int {
+		if a.Score > b.Score {
+			return -1
 		}
-		if filtered[i].Start != filtered[j].Start {
-			return filtered[i].Start < filtered[j].Start
+		if b.Score > a.Score {
+			return 1
 		}
-		return filtered[i].Len() > filtered[j].Len()
+		if a.Start != b.Start {
+			return a.Start - b.Start
+		}
+		return b.Len() - a.Len()
 	})
 	return filtered
 }

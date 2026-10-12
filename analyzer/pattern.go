@@ -1,7 +1,5 @@
 package analyzer
 
-import "regexp"
-
 // Pattern is a named, compiled regular expression with a base confidence score.
 //
 // By default a match's whole span (group 0) is reported as the entity. Set
@@ -17,16 +15,26 @@ type Pattern struct {
 	Group int
 
 	matcher Matcher
+	// prog is the shared RE2 program behind matcher, nil for a custom
+	// Matcher; see scanCache.
+	prog *program
+	// requires is the byte classes every match must contain, derived from
+	// the regex at construction; a text lacking any of them is not scanned.
+	// Zero (nothing required) for patterns backed by a custom Matcher.
+	requires classMask
 }
 
 // NewPattern compiles a pattern with the standard library RE2 engine,
 // returning an error if the regex is invalid.
 func NewPattern(name, regex string, score float64) (*Pattern, error) {
-	re, err := regexp.Compile(regex)
+	prog, err := compileProgram(regex)
 	if err != nil {
 		return nil, err
 	}
-	return &Pattern{Name: name, Regex: regex, Score: score, matcher: stdMatcher{re: re}}, nil
+	return &Pattern{
+		Name: name, Regex: regex, Score: score,
+		matcher: stdMatcher{prog: prog}, prog: prog, requires: patternRequires(regex),
+	}, nil
 }
 
 // MustPattern is like NewPattern but panics on an invalid regex. It is meant

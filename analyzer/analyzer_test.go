@@ -83,6 +83,43 @@ func TestRemoveDuplicates(t *testing.T) {
 			t.Fatalf("want single [10,15), got %+v", got)
 		}
 	})
+
+	t.Run("single zero score dropped", func(t *testing.T) {
+		got := RemoveDuplicates([]Result{{EntityType: E, Start: 0, End: 5, Score: 0.0}})
+		if len(got) != 0 {
+			t.Fatalf("want nothing, got %+v", got)
+		}
+	})
+
+	t.Run("single result kept", func(t *testing.T) {
+		got := RemoveDuplicates([]Result{{EntityType: E, Start: 0, End: 5, Score: 0.5}})
+		if len(got) != 1 || got[0].Start != 0 || got[0].Score != 0.5 {
+			t.Fatalf("want the one result back, got %+v", got)
+		}
+	})
+
+	t.Run("sorted by score, start, length", func(t *testing.T) {
+		got := RemoveDuplicates([]Result{
+			{EntityType: E, Start: 20, End: 25, Score: 0.5},
+			{EntityType: P, Start: 0, End: 8, Score: 0.9},
+			{EntityType: E, Start: 0, End: 5, Score: 0.9},
+			{EntityType: P, Start: 10, End: 15, Score: 0.5},
+		})
+		want := []Result{
+			{EntityType: P, Start: 0, End: 8, Score: 0.9},
+			{EntityType: E, Start: 0, End: 5, Score: 0.9},
+			{EntityType: P, Start: 10, End: 15, Score: 0.5},
+			{EntityType: E, Start: 20, End: 25, Score: 0.5},
+		}
+		if len(got) != len(want) {
+			t.Fatalf("got %+v, want %+v", got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("position %d: got %+v, want %+v", i, got[i], want[i])
+			}
+		}
+	})
 }
 
 // testEngine builds an engine with two simple recognizers: digit runs (DIGITS,
@@ -133,6 +170,41 @@ func TestEngineEntitiesFilter(t *testing.T) {
 	}
 	if !found(got, "WORD", "abc") {
 		t.Errorf("want WORD abc, got %+v", got)
+	}
+}
+
+// A cached recognizer set must track the registry: the same filter is served
+// from the cache, a recognizer added afterwards shows up, and recognizer
+// order is the registration order whatever the filter's order.
+func TestRegistryRecognizersCache(t *testing.T) {
+	reg := NewRegistry("en")
+	digits := NewPatternRecognizer("digits", "DIGITS", "en", []*Pattern{MustPattern("d", `\d+`, 0.4)})
+	words := NewPatternRecognizer("words", "WORD", "en", []*Pattern{MustPattern("w", `[a-z]+`, 0.8)})
+	reg.Add("en", digits)
+	reg.Add("en", words)
+
+	filter := []string{"WORD", "DIGITS"}
+	first := reg.Recognizers("en", filter)
+	if len(first) != 2 || first[0] != Recognizer(digits) || first[1] != Recognizer(words) {
+		t.Fatalf("filtered set = %v, want [digits words]", first)
+	}
+	if again := reg.Recognizers("en", filter); len(again) != 2 || &again[0] != &first[0] {
+		t.Errorf("second call did not hit the cache")
+	}
+	if got := reg.Recognizers("en", []string{"WORD"}); len(got) != 1 || got[0] != Recognizer(words) {
+		t.Errorf("WORD filter = %v, want [words]", got)
+	}
+	if got := reg.Recognizers("en", []string{}); len(got) != 0 {
+		t.Errorf("empty filter = %v, want none", got)
+	}
+	if got := reg.Recognizers("pt", filter); len(got) != 0 {
+		t.Errorf("unknown language = %v, want none", got)
+	}
+
+	more := NewPatternRecognizer("more", "WORD", "en", []*Pattern{MustPattern("m", `[A-Z]+`, 0.8)})
+	reg.Add("en", more)
+	if got := reg.Recognizers("en", filter); len(got) != 3 || got[2] != Recognizer(more) {
+		t.Errorf("after Add: %v, want [digits words more]", got)
 	}
 }
 

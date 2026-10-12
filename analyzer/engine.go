@@ -149,8 +149,16 @@ func wantsArtifacts(recs []Recognizer) bool {
 // pipeline for one text, feeding the shared artifacts (may be nil) to
 // artifact-aware recognizers.
 func (e *Engine) analyzeWithArtifacts(text string, o Options, recs []Recognizer, artifacts *NlpArtifacts) []Result {
+	// One byte-class summary and one scan cache serve every pattern
+	// recognizer; recs already passed the entity filter in the registry.
+	classes := byteClasses(text)
+	var scans scanCache
 	var all []Result
 	for _, rec := range recs {
+		if pr, ok := rec.(*PatternRecognizer); ok {
+			all = append(all, pr.analyze(text, classes, &scans)...)
+			continue
+		}
 		if ar, ok := rec.(ArtifactRecognizer); ok && artifacts != nil {
 			all = append(all, ar.AnalyzeWithArtifacts(text, o.Entities, artifacts)...)
 			continue

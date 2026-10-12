@@ -1,6 +1,10 @@
 package analyzer
 
-import "regexp"
+import (
+	"regexp"
+	"sync"
+	"sync/atomic"
+)
 
 // Match is a single regex match expressed in byte offsets. Groups[0] is the
 // whole match; Groups[i] is the i-th capture group. A group that did not
@@ -34,15 +38,46 @@ type Matcher interface {
 	String() string
 }
 
-// stdMatcher is the default Matcher, backed by the standard library RE2 engine.
-type stdMatcher struct {
-	re *regexp.Regexp
+// program is a compiled RE2 regex. Patterns with the same source share one
+// (`\b\d{11}\b` alone backs six built-in recognizers); shared flips when a
+// second Pattern adopts it, which tells scanCache the program's matches are
+// worth memoizing within an Analyze call.
+type program struct {
+	re     *regexp.Regexp
+	shared atomic.Bool
 }
 
-func (m stdMatcher) String() string { return m.re.String() }
+var (
+	programsMu sync.Mutex
+	programs   = map[string]*program{}
+)
+
+// compileProgram returns the program for regex, compiling it on first use.
+func compileProgram(regex string) (*program, error) {
+	programsMu.Lock()
+	defer programsMu.Unlock()
+	if p, ok := programs[regex]; ok {
+		p.shared.Store(true)
+		return p, nil
+	}
+	re, err := regexp.Compile(regex)
+	if err != nil {
+		return nil, err
+	}
+	p := &program{re: re}
+	programs[regex] = p
+	return p, nil
+}
+
+// stdMatcher is the default Matcher, backed by the standard library RE2 engine.
+type stdMatcher struct {
+	prog *program
+}
+
+func (m stdMatcher) String() string { return m.prog.re.String() }
 
 func (m stdMatcher) FindAll(text string) []Match {
-	raw := m.re.FindAllStringSubmatchIndex(text, -1)
+	raw := m.prog.re.FindAllStringSubmatchIndex(text, -1)
 	if raw == nil {
 		return nil
 	}
@@ -55,6 +90,38 @@ func (m stdMatcher) FindAll(text string) []Match {
 			groups[i/2] = [2]int{loc[i], loc[i+1]}
 		}
 		matches = append(matches, Match{Groups: groups})
+	}
+	return matches
+}
+
+// scanCache memoizes FindAll per shared program for the duration of one
+// Analyze call, so a text is scanned once for every pattern that uses the
+// same regex. It lives on the caller's stack; programs beyond its capacity
+// are simply scanned again.
+type scanCache struct {
+	n       int
+	entries [8]scanEntry
+}
+
+type scanEntry struct {
+	prog    *program
+	matches []Match
+}
+
+// findAll runs p's matcher over text, serving shared programs from the cache.
+func (s *scanCache) findAll(p *Pattern, text string) []Match {
+	if p.prog == nil || !p.prog.shared.Load() {
+		return p.matcher.FindAll(text)
+	}
+	for i := range s.n {
+		if s.entries[i].prog == p.prog {
+			return s.entries[i].matches
+		}
+	}
+	matches := p.matcher.FindAll(text)
+	if s.n < len(s.entries) {
+		s.entries[s.n] = scanEntry{prog: p.prog, matches: matches}
+		s.n++
 	}
 	return matches
 }

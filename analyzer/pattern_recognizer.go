@@ -17,9 +17,12 @@ type ContextValidator func(text string, start, end int) bool
 // patterns, with optional structural and context validators. It is the
 // workhorse behind almost every built-in recognizer.
 type PatternRecognizer struct {
-	name            string
-	entity          string
-	language        string
+	name     string
+	entity   string
+	language string
+	// entities is the one-element SupportedEntities slice, built once so the
+	// per-call entity filter does not allocate it.
+	entities        []string
 	patterns        []*Pattern
 	context         []string
 	validate        Validator
@@ -32,6 +35,7 @@ func NewPatternRecognizer(name, entity, language string, patterns []*Pattern) *P
 		name:     name,
 		entity:   entity,
 		language: language,
+		entities: []string{entity},
 		patterns: patterns,
 	}
 }
@@ -71,8 +75,9 @@ func (pr *PatternRecognizer) Context() []string { return pr.context }
 // Name implements Recognizer.
 func (pr *PatternRecognizer) Name() string { return pr.name }
 
-// SupportedEntities implements Recognizer.
-func (pr *PatternRecognizer) SupportedEntities() []string { return []string{pr.entity} }
+// SupportedEntities implements Recognizer. The returned slice is shared
+// across calls and must be treated as read-only.
+func (pr *PatternRecognizer) SupportedEntities() []string { return pr.entities }
 
 // SupportedLanguage implements Recognizer.
 func (pr *PatternRecognizer) SupportedLanguage() string { return pr.language }
@@ -83,14 +88,29 @@ func (pr *PatternRecognizer) SupportedLanguage() string { return pr.language }
 // structural validator, and finally filtered by the context validator. (A
 // promotes/drops; the context validator only filters.) Overlapping same-entity
 // matches are de-duplicated before returning.
+//
+// A pattern is only run when the text contains every byte class its matches
+// require (see Pattern.requires), so prose without a digit skips the
+// numeric-identifier patterns outright.
 func (pr *PatternRecognizer) Analyze(text string, entities []string) []Result {
-	if entities != nil && !supportsAny(pr.SupportedEntities(), entities) {
+	if entities != nil && !supportsAny(pr.entities, entities) {
 		return nil
 	}
+	var scans scanCache
+	return pr.analyze(text, byteClasses(text), &scans)
+}
 
+// analyze is Analyze after the entity filter, with the text's byte-class
+// summary and the per-call scan cache supplied by the caller: the engine
+// computes both once and shares them across every pattern recognizer it
+// runs, having already applied the entity filter through the registry.
+func (pr *PatternRecognizer) analyze(text string, classes classMask, scans *scanCache) []Result {
 	var results []Result
 	for _, p := range pr.patterns {
-		for _, m := range p.matcher.FindAll(text) {
+		if p.requires&classes != p.requires {
+			continue
+		}
+		for _, m := range scans.findAll(p, text) {
 			start, end := m.Span(p.Group)
 			if start < 0 || end <= start {
 				continue

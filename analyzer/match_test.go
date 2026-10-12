@@ -32,6 +32,41 @@ func TestPatternGroup(t *testing.T) {
 	}
 }
 
+// Patterns with the same source share one compiled program and, within an
+// Analyze call, one scan. Each pattern must still apply its own group, score
+// and recognizer to the shared matches.
+func TestSharedProgramKeepsPerPatternSettings(t *testing.T) {
+	const src = `(\d{2})-(\d{2})`
+	left := NewPatternRecognizer("Left", "LEFT", "en",
+		[]*Pattern{MustPattern("left", src, 0.3).WithGroup(1)})
+	right := NewPatternRecognizer("Right", "RIGHT", "en",
+		[]*Pattern{MustPattern("right", src, 0.7).WithGroup(2)})
+	if left.patterns[0].prog != right.patterns[0].prog {
+		t.Fatal("identical sources did not share a program")
+	}
+	reg := NewRegistry("en")
+	reg.Add("en", left)
+	reg.Add("en", right)
+	eng := NewEngine(reg, []string{"en"})
+	eng.SetContextEnhancer(nil)
+
+	got := eng.Analyze("id 12-34 and 56-78", Options{})
+	want := []Result{
+		{EntityType: "RIGHT", Start: 6, End: 8, Score: 0.7, Text: "34", RecognizerName: "Right"},
+		{EntityType: "RIGHT", Start: 16, End: 18, Score: 0.7, Text: "78", RecognizerName: "Right"},
+		{EntityType: "LEFT", Start: 3, End: 5, Score: 0.3, Text: "12", RecognizerName: "Left"},
+		{EntityType: "LEFT", Start: 13, End: 15, Score: 0.3, Text: "56", RecognizerName: "Left"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("result %d: got %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
 // TestContextValidator verifies the context-aware filter (A): a recognizer can
 // keep a match only when its surroundings satisfy a predicate.
 func TestContextValidator(t *testing.T) {

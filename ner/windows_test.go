@@ -113,6 +113,96 @@ func TestTokenWindows(t *testing.T) {
 	})
 }
 
+// countingTokenizer wraps a tokenizer and counts the encodings it is asked
+// for, so tests can prove when the sizing pass was skipped.
+type countingTokenizer struct {
+	api.Tokenizer
+	calls int
+}
+
+func (c *countingTokenizer) Encode(text string) []int {
+	c.calls++
+	return c.Tokenizer.Encode(text)
+}
+
+func (c *countingTokenizer) EncodeWithAnnotations(text string) api.AnnotatedEncoding {
+	c.calls++
+	return c.Tokenizer.EncodeWithAnnotations(text)
+}
+
+// testWindowTokenizer loads the WordPiece test tokenizer the way New does on
+// rust-tokenizer builds.
+func testWindowTokenizer(tb testing.TB) api.Tokenizer {
+	tb.Helper()
+	dir := tb.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "tokenizer.json"), testTokenizerJSON, 0o644); err != nil {
+		tb.Fatal(err)
+	}
+	tk := loadWindowTokenizer(dir)
+	if tk == nil {
+		tb.Fatal("loadWindowTokenizer returned nil for a valid tokenizer.json")
+	}
+	return tk
+}
+
+// TestWindowsShortCircuit pins the byte-count short-circuit in windows: a
+// text whose bytes plus special tokens fit the budget is one whole window
+// without any tokenizer call, and for every input — short or long, ASCII or
+// not, on either side of the boundary — the windows are exactly what the
+// full sizing pass (tokenWindows) produces.
+func TestWindowsShortCircuit(t *testing.T) {
+	const budget = 64
+	for _, tk := range []api.Tokenizer{fakeTokenizer{}, testWindowTokenizer(t)} {
+		specials := windowSpecials(tk)
+		if specials != 2 { // [CLS] ... [SEP]
+			t.Fatalf("windowSpecials = %d, want 2", specials)
+		}
+		counting := &countingTokenizer{Tokenizer: tk}
+		e := &Engine{winTok: counting, tokenBudget: budget, winSpecials: specials}
+
+		atBoundary := strings.Repeat("hello ", 10) + "wo" // 62 bytes: 62 + 2 == budget
+		if len(atBoundary)+specials != budget {
+			t.Fatalf("boundary fixture is %d bytes, want %d", len(atBoundary), budget-specials)
+		}
+		for _, tc := range []struct {
+			name    string
+			text    string
+			skipped bool
+		}{
+			{"empty", "", true},
+			{"one word", "hello", true},
+			{"short line", "hello world hello world", true},
+			{"non-ASCII short", "héllo wörld — 日本 hello", true},
+			{"exactly at budget", atBoundary, true},
+			{"one byte over", atBoundary + "r", false},
+			{"over in bytes, within tokens", strings.Repeat("hello ", 20), false},
+			{"non-ASCII over in bytes", strings.Repeat("héllo ", 12), false},
+			{"long multi-window", strings.TrimSpace(strings.Repeat("hello world ", 200)), false},
+			{"long non-ASCII multi-window", strings.TrimSpace(strings.Repeat("héllo wörld ", 200)), false},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				want := tokenWindows(tk, tc.text, budget)
+				counting.calls = 0
+				got := e.windows(tc.text)
+				if len(got) != len(want) {
+					t.Fatalf("windows = %+v, want %+v", got, want)
+				}
+				for i := range want {
+					if got[i] != want[i] {
+						t.Fatalf("windows = %+v, want %+v", got, want)
+					}
+				}
+				if tc.skipped && counting.calls != 0 {
+					t.Errorf("tokenizer called %d times, want the sizing pass skipped", counting.calls)
+				}
+				if !tc.skipped && counting.calls == 0 {
+					t.Errorf("tokenizer never called, want the sizing pass")
+				}
+			})
+		}
+	}
+}
+
 // testTokenizerJSON is a minimal BERT-style WordPiece tokenizer: one token
 // per known word, [CLS]/[SEP] added by the post-processor.
 var testTokenizerJSON = []byte(`{

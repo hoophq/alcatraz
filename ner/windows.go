@@ -52,6 +52,15 @@ type textWindow struct {
 // the model's token budget yield a single window covering the whole text.
 func (e *Engine) windows(folded string) []textWindow {
 	if e.winTok != nil {
+		// Every content token covers at least one byte (token spans are
+		// non-empty and non-overlapping), so a text whose byte count plus
+		// the fixed special tokens fits the budget provably encodes within
+		// it: one window, no tokenizer pass. This is the common case —
+		// short lines and cells — and the sizing pass is the only
+		// tokenization ProcessTexts does outside the model call.
+		if len(folded)+e.winSpecials <= e.tokenBudget {
+			return []textWindow{{0, len(folded)}}
+		}
 		return tokenWindows(e.winTok, folded, e.tokenBudget)
 	}
 	// Last resort, when no windowing tokenizer could be loaded. Every
@@ -76,6 +85,15 @@ func windowTokenizer(pipeline *pipelines.TokenClassificationPipeline, modelPath 
 		return tk.GoTokenizer.Tokenizer
 	}
 	return loadWindowTokenizer(modelPath)
+}
+
+// windowSpecials counts the special tokens tk adds around a text: the
+// post-processor template is fixed, so one probe encoding tells how many
+// tokens of every window's budget are not content. Tokens the mask does not
+// flag but that cover no bytes count as specials too, as in contentSpans.
+func windowSpecials(tk api.Tokenizer) int {
+	enc := tk.EncodeWithAnnotations("a")
+	return max(0, len(enc.IDs)-len(contentSpans(enc)))
 }
 
 // loadWindowTokenizer loads a pure-Go tokenizer from the model directory's
@@ -111,8 +129,11 @@ func loadWindowTokenizer(modelPath string) api.Tokenizer {
 // shrinking never opens a gap.
 func tokenWindows(tk api.Tokenizer, folded string, totalBudget int) []textWindow {
 	enc := tk.EncodeWithAnnotations(folded)
+	if len(enc.IDs) <= totalBudget {
+		return []textWindow{{0, len(folded)}}
+	}
 	spans := contentSpans(enc)
-	if len(enc.IDs) <= totalBudget || len(spans) == 0 {
+	if len(spans) == 0 {
 		return []textWindow{{0, len(folded)}}
 	}
 	// Special tokens ([CLS]/[SEP], model-dependent) occupy part of the

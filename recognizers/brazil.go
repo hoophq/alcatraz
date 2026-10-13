@@ -3,6 +3,7 @@ package recognizers
 import (
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/hoophq/alcatraz/analyzer"
 	"github.com/hoophq/alcatraz/entities"
@@ -21,7 +22,8 @@ func BRCPF() analyzer.Recognizer {
 }
 
 func validateBRCPF(s string) bool {
-	ds, ok := digitsExactly(s, 11)
+	var buf [11]int
+	ds, ok := digitsExactly(buf[:0], s, 11)
 	if !ok || allEqual(ds) {
 		return false
 	}
@@ -44,7 +46,8 @@ func BRCNPJ() analyzer.Recognizer {
 }
 
 func validateBRCNPJ(s string) bool {
-	ds, ok := digitsExactly(s, 14)
+	var buf [14]int
+	ds, ok := digitsExactly(buf[:0], s, 14)
 	if !ok || allEqual(ds) {
 		return false
 	}
@@ -78,7 +81,8 @@ func BRCNH() analyzer.Recognizer {
 }
 
 func validateBRCNH(s string) bool {
-	ds, ok := digitsExactly(s, 11)
+	var buf [11]int
+	ds, ok := digitsExactly(buf[:0], s, 11)
 	if !ok || allEqual(ds) {
 		return false
 	}
@@ -121,7 +125,8 @@ func BRPIS() analyzer.Recognizer {
 }
 
 func validateBRPIS(s string) bool {
-	ds, ok := digitsExactly(s, 11)
+	var buf [11]int
+	ds, ok := digitsExactly(buf[:0], s, 11)
 	if !ok || allEqual(ds) {
 		return false
 	}
@@ -176,7 +181,8 @@ func BRCNS() analyzer.Recognizer {
 }
 
 func validateBRCNS(s string) bool {
-	ds, ok := digitsExactly(s, 15)
+	var buf [15]int
+	ds, ok := digitsExactly(buf[:0], s, 15)
 	if !ok {
 		return false
 	}
@@ -234,7 +240,8 @@ func BRTitulo() analyzer.Recognizer {
 }
 
 func validateBRTitulo(s string) bool {
-	ds, ok := digitsExactly(s, 12)
+	var buf [12]int
+	ds, ok := digitsExactly(buf[:0], s, 12)
 	if !ok {
 		return false
 	}
@@ -279,7 +286,8 @@ func BRRenavam() analyzer.Recognizer {
 }
 
 func validateBRRenavam(s string) bool {
-	ds, ok := digitsExactly(s, 11)
+	var buf [11]int
+	ds, ok := digitsExactly(buf[:0], s, 11)
 	if !ok || allEqual(ds) {
 		return false
 	}
@@ -381,35 +389,81 @@ func BRPixKey() analyzer.Recognizer {
 //
 // Whole word, not substring: "recepcao 12345678" contains "cep" and would
 // otherwise satisfy a CEP gate, masking an ordinary eight-digit number — the
-// exact false positive these gates exist to prevent. Multi-word labels are
-// matched against the joined tokens so "codigo postal" still works.
+// exact false positive these gates exist to prevent. Words are maximal runs
+// of letters and digits; multi-word labels must match consecutive words, so
+// "codigo postal" still works. Comparison lower-cases the text rune by rune
+// (labels are already lower case), all on the stack.
 func labelBefore(text string, start int, labels ...string) bool {
 	const window = 24
-	from := start - window
-	if from < 0 {
-		from = 0
+	from := max(start-window, 0)
+	prefix := text[from:start]
+
+	// Word spans in prefix. A window byte is either in a word or a separator,
+	// so at most window/2 words fit.
+	var words [window/2 + 1][2]int
+	nw := 0
+	for i := 0; i < len(prefix); {
+		r, size := utf8.DecodeRuneInString(prefix[i:])
+		if isWordRune(r) {
+			if nw > 0 && words[nw-1][1] == i {
+				words[nw-1][1] = i + size
+			} else {
+				words[nw] = [2]int{i, i + size}
+				nw++
+			}
+		}
+		i += size
 	}
-	prefix := strings.ToLower(text[from:start])
-	fields := strings.FieldsFunc(prefix, func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
-	})
-	if len(fields) == 0 {
+	if nw == 0 {
 		return false
 	}
-	joined := strings.Join(fields, " ")
 	for _, l := range labels {
-		if !strings.Contains(l, " ") {
-			for _, f := range fields {
-				if f == l {
-					return true
-				}
+		for i := range nw {
+			if labelAt(prefix, words[:nw], i, l) {
+				return true
 			}
-			continue
-		}
-		if joined == l || strings.HasPrefix(joined, l+" ") ||
-			strings.HasSuffix(joined, " "+l) || strings.Contains(joined, " "+l+" ") {
-			return true
 		}
 	}
 	return false
+}
+
+// isWordRune mirrors the FieldsFunc split of the lower-cased window: a rune
+// belongs to a word when its lower-case form is a letter or digit.
+func isWordRune(r rune) bool {
+	l := unicode.ToLower(r)
+	return unicode.IsLetter(l) || unicode.IsDigit(l)
+}
+
+// labelAt reports whether label, read as single-space-separated words, equals
+// the consecutive words of prefix starting at words[i]. An empty label word
+// (empty label, doubled or trailing space) never matches, as no window word
+// is empty.
+func labelAt(prefix string, words [][2]int, i int, label string) bool {
+	for {
+		word, rest, more := strings.Cut(label, " ")
+		if word == "" || i == len(words) || !wordEqualsLower(prefix[words[i][0]:words[i][1]], word) {
+			return false
+		}
+		if !more {
+			return true
+		}
+		i++
+		label = rest
+	}
+}
+
+// wordEqualsLower reports whether lower-casing s rune by rune yields exactly
+// want, without materialising the lower-cased string.
+func wordEqualsLower(s, want string) bool {
+	var enc [utf8.UTFMax]byte
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		i += size
+		n := utf8.EncodeRune(enc[:], unicode.ToLower(r))
+		if len(want) < n || string(enc[:n]) != want[:n] {
+			return false
+		}
+		want = want[n:]
+	}
+	return want == ""
 }

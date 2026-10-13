@@ -177,3 +177,40 @@ func TestValidators(t *testing.T) {
 		})
 	}
 }
+
+// sink keeps the validator results observable so the compiler cannot drop
+// the calls under test.
+var sink bool
+
+// TestValidatorsDoNotAllocate pins that the checksum validators and the label
+// gate run without touching the heap: they execute once per regex match on
+// the Analyze hot path.
+func TestValidatorsDoNotAllocate(t *testing.T) {
+	cases := []struct {
+		name string
+		fn   func()
+	}{
+		{"credit_card", func() { sink = luhnValid("4111 1111 1111 1111") }},
+		{"iban", func() { sink = validateIBAN("GB82 WEST 1234 5698 7654 32") }},
+		{"ssn", func() { sink = validateSSN("123-45-6789") }},
+		{"itin", func() { sink = validateITIN("970-12-3456") }},
+		{"nino", func() { sink = validateNINO("AB 12 34 56 C") }},
+		{"aadhaar", func() { sink = validateAadhaar("2341 2341 2346") }},
+		{"es_nie", func() { sink = validateESNIE("X1234567L") }},
+		{"fi_personal_code", func() { sink = validateFIPersonalCode("131052-308T") }},
+		{"sg_fin", func() { sink = validateSGFIN("F1234567N") }},
+		{"br_cpf", func() { sink = validateBRCPF("111.444.777-35") }},
+		{"au_abn", func() { sink = validateABN("51 824 753 556") }},
+		{"label_before", func() { sink = labelBefore("endereco cep 04571010", 13, "cep", "codigo postal") }},
+		{"label_before_multiword", func() {
+			sink = labelBefore("Código Postal 04571010", 15, "cep", "codigo postal", "código postal")
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if n := testing.AllocsPerRun(100, c.fn); n != 0 {
+				t.Errorf("%s: %v allocs/run, want 0", c.name, n)
+			}
+		})
+	}
+}

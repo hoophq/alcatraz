@@ -1,9 +1,6 @@
 package recognizers
 
 import (
-	"strconv"
-	"strings"
-
 	"github.com/hoophq/alcatraz/analyzer"
 	"github.com/hoophq/alcatraz/entities"
 )
@@ -11,7 +8,7 @@ import (
 // emailPattern is written as an interpreted string literal because the
 // character class contains a literal backtick, which a raw string literal
 // cannot hold.
-const emailPattern = "\\b((([!#$%&'*+\\-/=?^_`{|}~\\w])|([!#$%&'*+\\-/=?^_`{|}~\\w][!#$%&'*+\\-/=?^_`{|}~\\.\\w]{0,}[!#$%&'*+\\-/=?^_`{|}~\\w]))[@]\\w+([-.]\\w+)*\\.\\w+([-.]\\w+)*)\\b"
+const emailPattern = "\\b(?:(?:(?:[!#$%&'*+\\-/=?^_`{|}~\\w])|(?:[!#$%&'*+\\-/=?^_`{|}~\\w][!#$%&'*+\\-/=?^_`{|}~\\.\\w]{0,}[!#$%&'*+\\-/=?^_`{|}~\\w]))[@]\\w+(?:[-.]\\w+)*\\.\\w+(?:[-.]\\w+)*)\\b"
 
 // Email detects email addresses.
 func Email() analyzer.Recognizer {
@@ -58,9 +55,9 @@ func CreditCard() analyzer.Recognizer {
 	return analyzer.NewPatternRecognizer(
 		"CreditCardRecognizer", entities.CreditCard, "en",
 		[]*analyzer.Pattern{analyzer.MustPattern("All Credit Cards (weak)",
-			`\b((4\d{3})|(5[0-5]\d{2})|(6\d{3})|(3\d{3}))[- ]?(\d{3,4})[- ]?(\d{3,4})[- ]?(\d{3,5})\b`, 0.3)},
+			`\b(?:(?:4\d{3})|(?:5[0-5]\d{2})|(?:6\d{3})|(?:3\d{3}))[- ]?(?:\d{3,4})[- ]?(?:\d{3,4})[- ]?(?:\d{3,5})\b`, 0.3)},
 	).WithContext("credit", "card", "visa", "mastercard", "cc", "amex", "discover").
-		WithValidator(func(m string) bool { return luhnValid(stripSeparators(m)) })
+		WithValidator(luhnValid)
 }
 
 // Crypto detects Bitcoin and Ethereum wallet addresses.
@@ -104,17 +101,17 @@ func DateTime() analyzer.Recognizer {
 		"DateTimeRecognizer", entities.DateTime, "en",
 		[]*analyzer.Pattern{
 			analyzer.MustPattern("Date (MM/DD/YYYY)",
-				`\b(0?[1-9]|1[0-2])[/-](0?[1-9]|[12]\d|3[01])[/-](\d{4})\b`, 0.6),
+				`\b(?:0?[1-9]|1[0-2])[/-](?:0?[1-9]|[12]\d|3[01])[/-](?:\d{4})\b`, 0.6),
 			analyzer.MustPattern("Date (ISO)",
-				`\b(\d{4})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])\b`, 0.7),
+				`\b(?:\d{4})-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])\b`, 0.7),
 			// hsp rather than \s: a date wrapped across a line is rare, while
 			// three adjacent table cells that happen to read as one is not,
 			// and DATE_TIME scores high enough (0.7-0.8) to clear most
 			// caller thresholds and mask them.
 			analyzer.MustPattern("Date (Month DD, YYYY)",
-				`\b(January|February|March|April|May|June|July|August|September|October|November|December)`+hsp+`+(\d{1,2}),?`+hsp+`+(\d{4})\b`, 0.8),
+				`\b(?:January|February|March|April|May|June|July|August|September|October|November|December)`+hsp+`+(?:\d{1,2}),?`+hsp+`+(?:\d{4})\b`, 0.8),
 			analyzer.MustPattern("Date (Mon DD, YYYY)",
-				`\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\.?`+hsp+`+(\d{1,2}),?`+hsp+`+(\d{4})\b`, 0.7),
+				`\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\.?`+hsp+`+(?:\d{1,2}),?`+hsp+`+(?:\d{4})\b`, 0.7),
 		},
 	).WithContext("date", "born", "birthday", "dob")
 }
@@ -126,43 +123,73 @@ func IBAN() analyzer.Recognizer {
 		"IbanRecognizer", entities.IBANCode, "en",
 		[]*analyzer.Pattern{
 			analyzer.MustPattern("IBAN", `\b[A-Z]{2}[0-9]{2}[A-Z0-9]{1,30}\b`, 0.3),
-			analyzer.MustPattern("IBAN (spaces)", `\b([A-Z]{2}[0-9]{2}`+hsp+`?([A-Z0-9]{4}`+hsp+`?){1,7}[A-Z0-9]{1,4})\b`, 0.4),
+			analyzer.MustPattern("IBAN (spaces)", `\b(?:[A-Z]{2}[0-9]{2}`+hsp+`?(?:[A-Z0-9]{4}`+hsp+`?){1,7}[A-Z0-9]{1,4})\b`, 0.4),
 		},
 	).WithContext("iban", "account", "bank").WithValidator(validateIBAN)
 }
 
-// validateIBAN implements the ISO 7064 mod-97 checksum.
+// validateIBAN implements the ISO 7064 mod-97 checksum, streaming the
+// rearranged number (body first, then country code and check digits) straight
+// off the match bytes: ASCII spaces are skipped, letters expand to two digits
+// (A=10 … Z=35), anything else fails.
 func validateIBAN(s string) bool {
-	iban := strings.ReplaceAll(s, " ", "")
-	if len(iban) < 15 || len(iban) > 34 {
+	n := 0
+	var head [4]byte
+	for i := range len(s) {
+		c := s[i]
+		if c == ' ' {
+			continue
+		}
+		if n < 4 {
+			head[n] = c
+		}
+		n++
+	}
+	if n < 15 || n > 34 {
 		return false
 	}
-	for i := 0; i < 2; i++ {
-		if c := iban[i]; c < 'A' || c > 'Z' {
+	for _, c := range head[:2] {
+		if c < 'A' || c > 'Z' {
 			return false
 		}
 	}
-	for i := 2; i < 4; i++ {
-		if c := iban[i]; c < '0' || c > '9' {
+	for _, c := range head[2:] {
+		if c < '0' || c > '9' {
 			return false
 		}
 	}
-	rearranged := iban[4:] + iban[0:4]
-	var numeric strings.Builder
-	for i := 0; i < len(rearranged); i++ {
-		switch c := rearranged[i]; {
-		case c >= '0' && c <= '9':
-			numeric.WriteByte(c)
-		case c >= 'A' && c <= 'Z':
-			numeric.WriteString(strconv.Itoa(int(c-'A') + 10))
-		default:
-			return false
-		}
-	}
-	num := numeric.String()
 	var rem uint64
-	for i := 0; i < len(num); i++ {
-		rem = (rem*10 + uint64(num[i]-'0')) % 97
+	seen := 0
+	for i := range len(s) {
+		c := s[i]
+		if c == ' ' {
+			continue
+		}
+		if seen++; seen <= 4 {
+			continue
+		}
+		if !mod97Push(&rem, c) {
+			return false
+		}
+	}
+	for _, c := range head {
+		mod97Push(&rem, c)
 	}
 	return rem == 1
+}
+
+// mod97Push folds one IBAN character into the running mod-97 remainder and
+// reports whether c was a valid digit or upper-case letter.
+func mod97Push(rem *uint64, c byte) bool {
+	switch {
+	case c >= '0' && c <= '9':
+		*rem = (*rem*10 + uint64(c-'0')) % 97
+	case c >= 'A' && c <= 'Z':
+		v := uint64(c-'A') + 10
+		*rem = (*rem*10 + v/10) % 97
+		*rem = (*rem*10 + v%10) % 97
+	default:
+		return false
+	}
+	return true
 }

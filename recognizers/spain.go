@@ -42,20 +42,21 @@ func validateESNIE(s string) bool {
 	if len(s) != 9 {
 		return false
 	}
-	var lead byte
+	var lead int
 	switch s[0] {
 	case 'X':
-		lead = '0'
+		lead = 0
 	case 'Y':
-		lead = '1'
+		lead = 1
 	case 'Z':
-		lead = '2'
+		lead = 2
 	default:
 		return false
 	}
-	number, err := strconv.Atoi(string(lead) + s[1:8])
-	if err != nil {
+	rest, ok := digitsInt(s[1:8])
+	if !ok {
 		return false
 	}
+	number := lead*10_000_000 + rest
 	return nifLetters[number%23] == s[8]
 }

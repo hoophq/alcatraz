@@ -10,13 +10,16 @@ func INAadhaar() analyzer.Recognizer {
 	return analyzer.NewPatternRecognizer(
 		"InAadhaarRecognizer", entities.INAadhaar, "en",
 		[]*analyzer.Pattern{analyzer.MustPattern("Aadhaar", `\b\d{4}`+hsp+`?\d{4}`+hsp+`?\d{4}\b`, 0.6)},
-	).WithContext("aadhaar", "aadhar").WithValidator(func(m string) bool {
-		ds := digitValues(m)
-		if len(ds) != 12 {
-			return false
-		}
-		return verhoeffValid(m)
-	})
+	).WithContext("aadhaar", "aadhar").WithValidator(validateAadhaar)
+}
+
+func validateAadhaar(m string) bool {
+	var buf [12]int
+	ds, ok := digitsExactly(buf[:0], m, 12)
+	if !ok {
+		return false
+	}
+	return verhoeffDigits(ds)
 }
 
 // INPAN detects Indian Permanent Account Numbers.

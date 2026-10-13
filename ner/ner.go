@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 
 	"github.com/gomlx/go-huggingface/tokenizers/api"
@@ -34,6 +35,10 @@ type Engine struct {
 	// one loaded from the model's tokenizer.json on rust-tokenizer builds.
 	// Nil only if neither could be resolved (byte-window fallback).
 	winTok api.Tokenizer
+	// winSpecials is how many special tokens winTok adds to every encoding
+	// ([CLS]/[SEP] and friends), measured once at construction; windows
+	// uses it to prove short texts fit the budget without tokenizing them.
+	winSpecials int
 
 	// tokenBudget is the maximum tokens (special tokens included) a single
 	// inference row may hold: the smaller of the largest sequence bucket
@@ -141,12 +146,19 @@ func New(ctx context.Context, cfg Config) (*Engine, error) {
 		maxBatch = cfg.BatchBuckets[len(cfg.BatchBuckets)-1]
 	}
 
+	winTok := windowTokenizer(pipeline, modelPath)
+	winSpecials := 0
+	if winTok != nil {
+		winSpecials = windowSpecials(winTok)
+	}
+
 	return &Engine{
 		runCtx:      runCtx,
 		session:     session,
 		pipeline:    pipeline,
 		cfg:         cfg,
-		winTok:      windowTokenizer(pipeline, modelPath),
+		winTok:      winTok,
+		winSpecials: winSpecials,
 		tokenBudget: tokenBudget,
 		maxBatch:    maxBatch,
 	}, nil
@@ -378,8 +390,9 @@ func (e *Engine) ignored(label string) bool {
 // Analyze call.
 func (e *Engine) Recognizer(language string) *Recognizer {
 	return &Recognizer{
-		engine:   e,
-		language: language,
+		engine:    e,
+		language:  language,
+		supported: e.cfg.SupportedEntities(),
 	}
 }
 
@@ -391,13 +404,17 @@ func (e *Engine) Recognizer(language string) *Recognizer {
 type Recognizer struct {
 	engine   *Engine
 	language string
+	// supported is Config.SupportedEntities computed once: the registry
+	// asks for it on every filtered Analyze, and the config is fixed.
+	supported []string
 }
 
 // Name implements analyzer.Recognizer.
 func (r *Recognizer) Name() string { return "NERecognizer" }
 
-// SupportedEntities implements analyzer.Recognizer.
-func (r *Recognizer) SupportedEntities() []string { return r.engine.cfg.SupportedEntities() }
+// SupportedEntities implements analyzer.Recognizer. It returns a fresh copy
+// of the set computed at construction.
+func (r *Recognizer) SupportedEntities() []string { return slices.Clone(r.supported) }
 
 // SupportedLanguage implements analyzer.Recognizer.
 func (r *Recognizer) SupportedLanguage() string { return r.language }
@@ -406,7 +423,7 @@ func (r *Recognizer) SupportedLanguage() string { return r.language }
 // inference error yields no results, matching the engine's degrade-to-
 // patterns behavior.
 func (r *Recognizer) Analyze(text string, entities []string) []analyzer.Result {
-	if entities != nil && !supportsAny(r.SupportedEntities(), entities) {
+	if entities != nil && !supportsAny(r.supported, entities) {
 		return nil
 	}
 	artifacts, err := r.engine.ProcessText(text, r.language)

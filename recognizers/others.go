@@ -1,8 +1,6 @@
 package recognizers
 
 import (
-	"strconv"
-
 	"github.com/hoophq/alcatraz/analyzer"
 	"github.com/hoophq/alcatraz/entities"
 )
@@ -16,7 +14,8 @@ func PLPESEL() analyzer.Recognizer {
 }
 
 func validatePESEL(s string) bool {
-	ds, ok := digitsExactly(s, 11)
+	var buf [11]int
+	ds, ok := digitsExactly(buf[:0], s, 11)
 	if !ok {
 		return false
 	}
@@ -39,7 +38,8 @@ func KRRRN() analyzer.Recognizer {
 }
 
 func validateKRRRN(s string) bool {
-	ds, ok := digitsExactly(s, 13)
+	var buf [13]int
+	ds, ok := digitsExactly(buf[:0], s, 13)
 	if !ok {
 		return false
 	}
@@ -71,10 +71,14 @@ func validateFIPersonalCode(s string) bool {
 	default:
 		return false
 	}
-	number, err := strconv.Atoi(s[0:6] + s[7:10])
-	if err != nil {
+	// The check character covers the date and the individual number read as
+	// one nine-digit integer, i.e. ddmmyy*1000 + nnn.
+	date, ok1 := digitsInt(s[0:6])
+	individual, ok2 := digitsInt(s[7:10])
+	if !ok1 || !ok2 {
 		return false
 	}
+	number := date*1000 + individual
 	const checkChars = "0123456789ABCDEFHJKLMNPRSTUVWXY"
 	return checkChars[number%31] == s[10]
 }
@@ -91,7 +95,8 @@ func THTNIN() analyzer.Recognizer {
 }
 
 func validateTHTNIN(s string) bool {
-	ds, ok := digitsExactly(s, 13)
+	var buf [13]int
+	ds, ok := digitsExactly(buf[:0], s, 13)
 	if !ok {
 		return false
 	}

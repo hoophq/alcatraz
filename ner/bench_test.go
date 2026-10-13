@@ -89,3 +89,35 @@ func BenchmarkSnapToWordsOpaqueBlob(b *testing.B) {
 		snapToWords(text, spans)
 	}
 }
+
+// BenchmarkInferenceRowsShortLines measures the segment→window expansion of
+// ProcessTexts over 50 short lines with the real pure-Go WordPiece
+// tokenizer, which is everything ProcessTexts does before the model call
+// (ProcessTexts itself needs a model). "short-circuit" is the production
+// path, where every line fits the budget by byte count and windows skips
+// the sizing pass; "sizing-pass" forces the tokenizer pass on every line by
+// pretending the specials alone exceed the byte slack, for comparison.
+func BenchmarkInferenceRowsShortLines(b *testing.B) {
+	texts := shortLines(50)
+	folded := make([]string, len(texts))
+	foldOffsets := make([][]int, len(texts))
+	for i, text := range texts {
+		folded[i], foldOffsets[i] = foldASCII(text)
+	}
+	tk := testWindowTokenizer(b)
+	for _, tc := range []struct {
+		name     string
+		specials int
+	}{
+		{"short-circuit", windowSpecials(tk)},
+		{"sizing-pass", 256},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			e := &Engine{cfg: Config{Segmentation: SegmentWhole}, winTok: tk, winSpecials: tc.specials, tokenBudget: 256}
+			b.ReportAllocs()
+			for b.Loop() {
+				e.inferenceRows(texts, folded, foldOffsets)
+			}
+		})
+	}
+}

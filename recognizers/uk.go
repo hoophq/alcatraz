@@ -1,7 +1,8 @@
 package recognizers
 
 import (
-	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/hoophq/alcatraz/analyzer"
 	"github.com/hoophq/alcatraz/entities"
@@ -16,7 +17,8 @@ func UKNHS() analyzer.Recognizer {
 }
 
 func validateNHS(s string) bool {
-	ds, ok := digitsExactly(s, 10)
+	var buf [10]int
+	ds, ok := digitsExactly(buf[:0], s, 10)
 	if !ok {
 		return false
 	}
@@ -42,11 +44,39 @@ func UKNINO() analyzer.Recognizer {
 }
 
 func validateNINO(s string) bool {
-	nino := strings.Join(strings.Fields(s), "")
-	if len(nino) != 9 {
+	// Compact the match into nino, dropping every Unicode space (the pattern
+	// allows \p{Zs} between groups); more than nine other bytes is a miss.
+	var nino [9]byte
+	n := 0
+	for i := 0; i < len(s); {
+		c := s[i]
+		if c < utf8.RuneSelf {
+			i++
+			if unicode.IsSpace(rune(c)) {
+				continue
+			}
+			if n == len(nino) {
+				return false
+			}
+			nino[n] = c
+			n++
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if unicode.IsSpace(r) {
+			i += size
+			continue
+		}
+		if n+size > len(nino) {
+			return false
+		}
+		n += copy(nino[n:], s[i:i+size])
+		i += size
+	}
+	if n != len(nino) {
 		return false
 	}
-	switch nino[0:2] {
+	switch string(nino[:2]) {
 	case "BG", "GB", "NK", "KN", "TN", "NT", "ZZ":
 		return false
 	}

@@ -59,7 +59,8 @@ func ITVAT() analyzer.Recognizer {
 }
 
 func validateITVAT(s string) bool {
-	ds, ok := digitsExactly(s, 11)
+	var buf [11]int
+	ds, ok := digitsExactly(buf[:0], s, 11)
 	if !ok {
 		return false
 	}

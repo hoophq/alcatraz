@@ -314,6 +314,57 @@ func TestInferenceRowsWindowedFlag(t *testing.T) {
 	}
 }
 
+// shortLines is a screen's worth of OCR-like lines (≤ 64 bytes each), the
+// shape libhoop-ica batches through ProcessTexts.
+func shortLines(n int) []string {
+	lines := make([]string, n)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("%2d  John Smith  john.smith%d@example.com  Berlin  2024-05-%02d", i, i, i%28+1)
+		if len(lines[i]) > 64 {
+			panic("fixture line over 64 bytes")
+		}
+	}
+	return lines
+}
+
+// TestInferenceRowsShortLines pins the row expansion ProcessTexts performs
+// on a batch of short lines, with a windowing tokenizer present: one row per
+// text, each the whole folded text at offset 0, nothing windowed — and the
+// sizing tokenizer never runs, since every line fits the budget by byte
+// count alone. The rows are the model's input, so this is the part of
+// ProcessTexts that can be checked without a model.
+func TestInferenceRowsShortLines(t *testing.T) {
+	texts := shortLines(50)
+	for _, mode := range []string{SegmentWhole, SegmentLines, SegmentFields} {
+		t.Run(mode, func(t *testing.T) {
+			counting := &countingTokenizer{Tokenizer: fakeTokenizer{}}
+			e := testEngine(t, mode)
+			e.winTok, e.winSpecials, e.tokenBudget = counting, 2, 256
+
+			folded := make([]string, len(texts))
+			foldOffsets := make([][]int, len(texts))
+			for i, text := range texts {
+				folded[i], foldOffsets[i] = foldASCII(text)
+			}
+			rows, windowed := e.inferenceRows(texts, folded, foldOffsets)
+			if len(rows) != len(texts) {
+				t.Fatalf("%d rows for %d texts", len(rows), len(texts))
+			}
+			for i, r := range rows {
+				if r.textIdx != i || r.offset != 0 || r.body != folded[i] {
+					t.Errorf("row %d = %+v, want whole text %d at offset 0", i, r, i)
+				}
+				if windowed[i] {
+					t.Errorf("text %d flagged windowed", i)
+				}
+			}
+			if counting.calls != 0 {
+				t.Errorf("sizing tokenizer called %d times, want 0", counting.calls)
+			}
+		})
+	}
+}
+
 func TestNormalizeSegmentation(t *testing.T) {
 	for in, want := range map[string]string{
 		// The zero value resolves, so Engine.Config reports the real rule.

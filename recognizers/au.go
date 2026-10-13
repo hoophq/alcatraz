@@ -15,7 +15,8 @@ func AUTFN() analyzer.Recognizer {
 }
 
 func validateTFN(s string) bool {
-	ds, ok := digitsExactly(s, 9)
+	var buf [9]int
+	ds, ok := digitsExactly(buf[:0], s, 9)
 	if !ok {
 		return false
 	}
@@ -37,10 +38,12 @@ func AUABN() analyzer.Recognizer {
 }
 
 func validateABN(s string) bool {
-	ds, ok := digitsExactly(s, 11)
+	var buf [11]int
+	ds, ok := digitsExactly(buf[:0], s, 11)
 	if !ok {
 		return false
 	}
+	// ds is private to this call (it aliases buf), so mutating it is safe.
 	if ds[0] > 0 {
 		ds[0]-- // subtract 1 from the leading digit
 	}
@@ -61,7 +64,8 @@ func AUACN() analyzer.Recognizer {
 }
 
 func validateACN(s string) bool {
-	ds, ok := digitsExactly(s, 9)
+	var buf [9]int
+	ds, ok := digitsExactly(buf[:0], s, 9)
 	if !ok {
 		return false
 	}
@@ -83,7 +87,8 @@ func AUMedicare() analyzer.Recognizer {
 }
 
 func validateMedicare(s string) bool {
-	ds, ok := digitsExactly(s, 10)
+	var buf [10]int
+	ds, ok := digitsExactly(buf[:0], s, 10)
 	if !ok {
 		return false
 	}

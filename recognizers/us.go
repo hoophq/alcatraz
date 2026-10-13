@@ -1,9 +1,6 @@
 package recognizers
 
 import (
-	"strconv"
-	"strings"
-
 	"github.com/hoophq/alcatraz/analyzer"
 	"github.com/hoophq/alcatraz/entities"
 )
@@ -21,39 +18,48 @@ func USSSN() analyzer.Recognizer {
 		WithValidator(validateSSN)
 }
 
+// ssnDigits collects the nine digits of a dashed or bare SSN-shaped value
+// into ds. Only '-' may separate the digits; any other byte fails.
+func ssnDigits(ds *[9]int, s string) bool {
+	n := 0
+	for i := range len(s) {
+		c := s[i]
+		switch {
+		case c == '-':
+			continue
+		case c < '0' || c > '9' || n == len(ds):
+			return false
+		}
+		ds[n] = int(c - '0')
+		n++
+	}
+	return n == len(ds)
+}
+
 func validateSSN(s string) bool {
-	san := strings.ReplaceAll(s, "-", "")
-	if len(san) != 9 {
+	var ds [9]int
+	if !ssnDigits(&ds, s) {
 		return false
 	}
-	area, err1 := strconv.Atoi(san[0:3])
-	group, err2 := strconv.Atoi(san[3:5])
-	serial, err3 := strconv.Atoi(san[5:9])
-	if err1 != nil || err2 != nil || err3 != nil {
-		return false
-	}
+	area := ds[0]*100 + ds[1]*10 + ds[2]
+	group := ds[3]*10 + ds[4]
+	serial := ds[5]*1000 + ds[6]*100 + ds[7]*10 + ds[8]
 	if area == 0 || area == 666 || area >= 900 {
 		return false
 	}
 	if group == 0 || serial == 0 {
 		return false
 	}
-	ds := digitValues(san)
-	if len(ds) == 9 {
-		allSeq, allSame := true, true
-		for i := 1; i < 9; i++ {
-			if ds[i] != ds[i-1]+1 {
-				allSeq = false
-			}
-			if ds[i] != ds[i-1] {
-				allSame = false
-			}
+	allSeq, allSame := true, true
+	for i := 1; i < len(ds); i++ {
+		if ds[i] != ds[i-1]+1 {
+			allSeq = false
 		}
-		if allSeq || allSame {
-			return false
+		if ds[i] != ds[i-1] {
+			allSame = false
 		}
 	}
-	return true
+	return !allSeq && !allSame
 }
 
 // USITIN detects US Individual Taxpayer Identification Numbers (9XX-XX-XXXX).
@@ -61,29 +67,25 @@ func USITIN() analyzer.Recognizer {
 	return analyzer.NewPatternRecognizer(
 		"UsItinRecognizer", entities.USITIN, "en",
 		[]*analyzer.Pattern{
-			analyzer.MustPattern("ITIN (dashes)", `\b(9\d{2})-(\d{2})-(\d{4})\b`, 0.85),
+			analyzer.MustPattern("ITIN (dashes)", `\b(?:9\d{2})-(?:\d{2})-(?:\d{4})\b`, 0.85),
 			analyzer.MustPattern("ITIN (no dashes)", `\b9\d{8}\b`, 0.3),
 		},
 	).WithContext("itin", "taxpayer", "tax").WithValidator(validateITIN)
 }
 
 func validateITIN(s string) bool {
-	san := strings.ReplaceAll(s, "-", "")
-	if len(san) != 9 || san[0] != '9' {
+	var ds [9]int
+	if !ssnDigits(&ds, s) || ds[0] != 9 {
 		return false
 	}
-	area, err1 := strconv.Atoi(san[0:3])
-	group, err2 := strconv.Atoi(san[3:5])
-	serial, err3 := strconv.Atoi(san[5:9])
-	if err1 != nil || err2 != nil || err3 != nil {
-		return false
-	}
-	ff := area % 100
+	ff := ds[1]*10 + ds[2]
 	valid := (ff >= 50 && ff <= 65) || (ff >= 70 && ff <= 88) ||
 		(ff >= 90 && ff <= 92) || (ff >= 94 && ff <= 99)
 	if !valid {
 		return false
 	}
+	group := ds[3]*10 + ds[4]
+	serial := ds[5]*1000 + ds[6]*100 + ds[7]*10 + ds[8]
 	return group != 0 && serial != 0
 }
 
@@ -128,8 +130,9 @@ func ABARouting() analyzer.Recognizer {
 }
 
 func validateABA(s string) bool {
-	ds := digitValues(s)
-	if len(ds) != 9 {
+	var buf [9]int
+	ds, ok := digitsExactly(buf[:0], s, 9)
+	if !ok {
 		return false
 	}
 	checksum := (3*(ds[0]+ds[3]+ds[6]) + 7*(ds[1]+ds[4]+ds[7]) + (ds[2] + ds[5] + ds[8])) % 10

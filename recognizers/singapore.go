@@ -22,14 +22,14 @@ func validateSGFIN(s string) bool {
 	if first != 'F' && first != 'G' && first != 'M' {
 		return false
 	}
-	ds := digitValues(s[1:8])
-	if len(ds) != 7 {
-		return false
-	}
 	weights := [7]int{2, 7, 6, 5, 4, 3, 2}
 	sum := 0
-	for i, d := range ds {
-		sum += d * weights[i]
+	for i, w := range weights {
+		c := s[1+i]
+		if c < '0' || c > '9' {
+			return false
+		}
+		sum += int(c-'0') * w
 	}
 	if first == 'M' {
 		sum += 3

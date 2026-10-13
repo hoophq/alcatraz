@@ -22,9 +22,14 @@ type PatternRecognizer struct {
 	language string
 	// entities is the one-element SupportedEntities slice, built once so the
 	// per-call entity filter does not allocate it.
-	entities        []string
-	patterns        []*Pattern
-	context         []string
+	entities []string
+	patterns []*Pattern
+	context  []string
+	// contextPhrases is context pre-split into lower-case words, and
+	// contextLongest the longest such word in bytes, as contextWords wants
+	// them; computed once in WithContext.
+	contextPhrases  [][]string
+	contextLongest  int
 	validate        Validator
 	contextValidate ContextValidator
 }
@@ -51,6 +56,9 @@ func NewPatternRecognizer(name, entity, language string, patterns []*Pattern) *P
 // Returns the recognizer for chaining.
 func (pr *PatternRecognizer) WithContext(words ...string) *PatternRecognizer {
 	pr.context = words
+	// Split and lower-case once here rather than on every Enhance call;
+	// see contextWords.
+	pr.contextPhrases, pr.contextLongest = splitContext(words)
 	return pr
 }
 
@@ -97,15 +105,16 @@ func (pr *PatternRecognizer) Analyze(text string, entities []string) []Result {
 		return nil
 	}
 	var scans scanCache
-	return pr.analyze(text, byteClasses(text), &scans)
+	return RemoveDuplicates(pr.appendResults(nil, text, byteClasses(text), &scans))
 }
 
-// analyze is Analyze after the entity filter, with the text's byte-class
-// summary and the per-call scan cache supplied by the caller: the engine
-// computes both once and shares them across every pattern recognizer it
-// runs, having already applied the entity filter through the registry.
-func (pr *PatternRecognizer) analyze(text string, classes classMask, scans *scanCache) []Result {
-	var results []Result
+// appendResults is Analyze after the entity filter and before
+// de-duplication: it appends every validated match to dst and returns the
+// extended slice. The text's byte-class summary and the per-call scan cache
+// come from the caller, so the engine computes both once and shares them
+// across every pattern recognizer it runs — and skips the per-recognizer
+// de-duplication, since its own pass over the combined results subsumes it.
+func (pr *PatternRecognizer) appendResults(dst []Result, text string, classes classMask, scans *scanCache) []Result {
 	for _, p := range pr.patterns {
 		if p.requires&classes != p.requires {
 			continue
@@ -129,7 +138,7 @@ func (pr *PatternRecognizer) analyze(text string, classes classMask, scans *scan
 			if score <= MinScore {
 				continue
 			}
-			results = append(results, Result{
+			dst = append(dst, Result{
 				EntityType:     pr.entity,
 				Start:          start,
 				End:            end,
@@ -138,5 +147,5 @@ func (pr *PatternRecognizer) analyze(text string, classes classMask, scans *scan
 			})
 		}
 	}
-	return RemoveDuplicates(results)
+	return dst
 }

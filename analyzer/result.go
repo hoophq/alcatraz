@@ -1,6 +1,9 @@
 package analyzer
 
-import "slices"
+import (
+	"slices"
+	"strings"
+)
 
 // Score bounds for a detection. A score is a confidence in [MinScore, MaxScore].
 const (
@@ -53,60 +56,64 @@ func (r Result) EqualIndices(other Result) bool {
 	return r.Start == other.Start && r.End == other.End
 }
 
-// RemoveDuplicates collapses overlapping detections of the same entity type,
-// keeping the highest-scoring span and dropping any span contained within a
-// kept one. Zero-score results are discarded. Detections of different entity
-// types never suppress each other. The result is sorted by score (descending),
-// then start offset (ascending), then length (descending). With fewer than two
-// results the input slice itself is returned.
+// RemoveDuplicates collapses overlapping detections of the same entity type:
+// a span contained in another span of the same type is dropped (the
+// enclosing one wins, whatever the scores), and of two identical spans the
+// higher-scoring one is kept, the earlier on a tie. Zero-score results are
+// discarded. Detections of different entity types never suppress each
+// other. The result is sorted by score (descending), then start offset
+// (ascending), then length (descending).
+//
+// The input slice is sorted and reused for the result; callers that need
+// the original order must pass a copy. With fewer than two results no sort
+// runs and the input is returned as is (or emptied when zero-scored).
 func RemoveDuplicates(results []Result) []Result {
-	// Zero or one result needs no comparison and no sort: a lone result is
-	// returned as is (or dropped when zero-scored) without allocating. This
-	// is the common case for a short text, where the closure and swapper
-	// the sort below would build used to be most of the call's allocations.
 	if len(results) < 2 {
 		if len(results) == 1 && results[0].Score == 0.0 {
 			return results[:0]
 		}
 		return results
 	}
-	filtered := make([]Result, 0, len(results))
+
+	// Group by type, then order spans so that any span containing another
+	// precedes it: start ascending, and for an equal start the longer first.
+	// Stable, so identical spans keep input order and the tie rule below
+	// favours the earlier one.
+	slices.SortStableFunc(results, func(a, b Result) int {
+		if a.EntityType != b.EntityType {
+			return strings.Compare(a.EntityType, b.EntityType)
+		}
+		if a.Start != b.Start {
+			return a.Start - b.Start
+		}
+		return b.End - a.End
+	})
+
+	// One sweep. Kept spans of a type have strictly increasing starts and
+	// ends, so a span contained in any kept span of its type is contained
+	// in the last one; a span not contained in the last one is kept.
+	kept := results[:0]
 	for _, r := range results {
 		if r.Score == 0.0 {
 			continue
 		}
-		add := true
-		for _, ex := range filtered {
-			// an equal span of the same type with a lower-or-equal score loses
-			if r.EqualIndices(ex) && r.EntityType == ex.EntityType && r.Score <= ex.Score {
-				add = false
-				break
-			}
-			// a span contained in an existing one of the same type is redundant
-			if r.ContainedIn(ex) && r.EntityType == ex.EntityType {
-				add = false
-				break
-			}
-		}
-		if !add {
-			continue
-		}
-		// drop any existing span that this one now subsumes (same type)
-		kept := filtered[:0]
-		for _, ex := range filtered {
-			if ex.ContainedIn(r) && ex.EntityType == r.EntityType {
+		if n := len(kept); n > 0 {
+			last := &kept[n-1]
+			if last.EntityType == r.EntityType && r.End <= last.End {
+				if r.Start == last.Start && r.End == last.End && r.Score > last.Score {
+					*last = r
+				}
 				continue
 			}
-			kept = append(kept, ex)
 		}
-		filtered = append(kept, r)
+		kept = append(kept, r)
 	}
 
-	slices.SortStableFunc(filtered, func(a, b Result) int {
-		if a.Score > b.Score {
-			return -1
-		}
-		if b.Score > a.Score {
+	slices.SortStableFunc(kept, func(a, b Result) int {
+		if a.Score != b.Score {
+			if a.Score > b.Score {
+				return -1
+			}
 			return 1
 		}
 		if a.Start != b.Start {
@@ -114,5 +121,5 @@ func RemoveDuplicates(results []Result) []Result {
 		}
 		return b.Len() - a.Len()
 	})
-	return filtered
+	return kept
 }

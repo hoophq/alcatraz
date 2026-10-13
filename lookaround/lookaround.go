@@ -70,16 +70,16 @@ func (m *Matcher) FindAll(text string) []analyzer.Match {
 	}
 	for match != nil {
 		groups := match.Groups()
-		spans := make([][2]int, len(groups))
+		loc := make([]int, 2*len(groups))
 		for i, g := range groups {
 			// A group with no captures did not participate in this match.
 			if len(g.Captures) == 0 {
-				spans[i] = [2]int{-1, -1}
+				loc[2*i], loc[2*i+1] = -1, -1
 				continue
 			}
-			spans[i] = [2]int{toByte(g.Index), toByte(g.Index + g.Length)}
+			loc[2*i], loc[2*i+1] = toByte(g.Index), toByte(g.Index+g.Length)
 		}
-		out = append(out, analyzer.Match{Groups: spans})
+		out = append(out, analyzer.NewMatch(loc))
 
 		match, err = m.re.FindNextMatch(match)
 		if err != nil {

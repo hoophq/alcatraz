@@ -72,7 +72,7 @@ type fixedMatcher struct{}
 
 func (fixedMatcher) String() string { return "(?<=custom)" }
 func (fixedMatcher) FindAll(text string) []analyzer.Match {
-	return []analyzer.Match{{Groups: [][2]int{{0, len(text)}}}}
+	return []analyzer.Match{analyzer.NewMatch([]int{0, len(text)})}
 }
 
 // The prefilter must never hide a match: for every built-in pattern and

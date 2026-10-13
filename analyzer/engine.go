@@ -2,7 +2,9 @@ package analyzer
 
 import (
 	"regexp"
+	"slices"
 	"strings"
+	"sync/atomic"
 )
 
 // Options tunes a single Analyze call. The zero value is valid: it analyzes
@@ -22,13 +24,18 @@ type Options struct {
 }
 
 // Engine runs a registry of recognizers over text and reconciles their
-// results. It is safe for concurrent use: Analyze does not mutate engine state.
+// results. It is safe for concurrent use: Analyze touches no engine state
+// beyond an atomically swapped allow-list cache.
 type Engine struct {
 	registry  *Registry
 	threshold float64
 	languages []string
 	nlp       NlpEngine
 	context   ContextEnhancer
+
+	// allow caches the last Options.AllowList seen, prepared; see
+	// prepareAllowList.
+	allow atomic.Pointer[allowList]
 }
 
 // NewEngine builds an engine over the given registry. languages records the
@@ -149,14 +156,16 @@ func wantsArtifacts(recs []Recognizer) bool {
 // pipeline for one text, feeding the shared artifacts (may be nil) to
 // artifact-aware recognizers.
 func (e *Engine) analyzeWithArtifacts(text string, o Options, recs []Recognizer, artifacts *NlpArtifacts) []Result {
-	// One byte-class summary and one scan cache serve every pattern
-	// recognizer; recs already passed the entity filter in the registry.
+	// One byte-class summary, one scan cache and one result slice serve
+	// every pattern recognizer; recs already passed the entity filter in
+	// the registry, and the de-duplication below covers what each
+	// recognizer's own Analyze would have done.
 	classes := byteClasses(text)
 	var scans scanCache
 	var all []Result
 	for _, rec := range recs {
 		if pr, ok := rec.(*PatternRecognizer); ok {
-			all = append(all, pr.analyze(text, classes, &scans)...)
+			all = pr.appendResults(all, text, classes, &scans)
 			continue
 		}
 		if ar, ok := rec.(ArtifactRecognizer); ok && artifacts != nil {
@@ -190,7 +199,7 @@ func (e *Engine) analyzeWithArtifacts(text string, o Options, recs []Recognizer,
 	}
 
 	if len(o.AllowList) > 0 {
-		results = applyAllowList(results, o.AllowList, text, o.AllowListRegex)
+		results = e.prepareAllowList(o).apply(results, text)
 	}
 
 	for i := range results {
@@ -199,30 +208,51 @@ func (e *Engine) analyzeWithArtifacts(text string, o Options, recs []Recognizer,
 	return results
 }
 
-// applyAllowList drops results whose matched text is allow-listed. In regex
-// mode the entries are joined with "|"; an invalid combined pattern falls back
-// to exact matching.
-func applyAllowList(results []Result, allowList []string, text string, regexMode bool) []Result {
-	if regexMode {
-		if re, err := regexp.Compile(strings.Join(allowList, "|")); err == nil {
-			kept := results[:0]
-			for _, r := range results {
-				if !re.MatchString(text[r.Start:r.End]) {
-					kept = append(kept, r)
-				}
-			}
-			return kept
-		}
-		// invalid combined regex: fall through to exact matching
-	}
+// allowList is a prepared Options.AllowList: the compiled alternation in
+// regex mode (nil when the combined pattern is invalid, which falls back to
+// exact matching) or the set of exact entries.
+type allowList struct {
+	entries   []string
+	regexMode bool
+	re        *regexp.Regexp
+	exact     map[string]struct{}
+}
 
-	allowed := make(map[string]struct{}, len(allowList))
-	for _, a := range allowList {
-		allowed[a] = struct{}{}
+// prepareAllowList returns the prepared form of o's allow list, reusing the
+// one from the previous call when the list is the same. Callers tend to pass
+// one list on every call, so a single cached entry compared element-wise —
+// no key to build, no allocation on a hit — covers the common case; a
+// different list simply replaces it.
+func (e *Engine) prepareAllowList(o Options) *allowList {
+	if al := e.allow.Load(); al != nil && al.regexMode == o.AllowListRegex && slices.Equal(al.entries, o.AllowList) {
+		return al
 	}
+	al := &allowList{entries: slices.Clone(o.AllowList), regexMode: o.AllowListRegex}
+	if o.AllowListRegex {
+		al.re, _ = regexp.Compile(strings.Join(o.AllowList, "|"))
+	}
+	if al.re == nil {
+		al.exact = make(map[string]struct{}, len(o.AllowList))
+		for _, a := range o.AllowList {
+			al.exact[a] = struct{}{}
+		}
+	}
+	e.allow.Store(al)
+	return al
+}
+
+// apply drops the results whose matched text is allow-listed.
+func (al *allowList) apply(results []Result, text string) []Result {
 	kept := results[:0]
 	for _, r := range results {
-		if _, ok := allowed[text[r.Start:r.End]]; !ok {
+		match := text[r.Start:r.End]
+		var listed bool
+		if al.re != nil {
+			listed = al.re.MatchString(match)
+		} else {
+			_, listed = al.exact[match]
+		}
+		if !listed {
 			kept = append(kept, r)
 		}
 	}

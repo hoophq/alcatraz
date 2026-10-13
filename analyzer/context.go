@@ -160,10 +160,12 @@ func (w *WordContextEnhancer) Enhance(text string, results []Result, recs []Reco
 // fiscale") is matched as a phrase rather than as a string that no single
 // word can equal.
 //
-// Only recognizers that actually produced a boostable result are split. A
-// call typically has dozens of recognizers registered and results from one or
-// two of them, so doing it the other way round would spend the bulk of the
-// work on entries nothing will ever look up.
+// Only recognizers that actually produced a boostable result are looked up.
+// A call typically has dozens of recognizers registered and results from one
+// or two of them, so doing it the other way round would spend the bulk of
+// the work on entries nothing will ever look up. A PatternRecognizer carries
+// its phrases pre-split from WithContext; any other ContextualRecognizer is
+// split here, per call.
 //
 // The second return is the longest window word that could still match one of
 // those phrases, in bytes; see foldWord for what the scanners do with it.
@@ -180,26 +182,22 @@ func contextWords(recs []Recognizer, results []Result) (map[string][][]string, i
 
 	longest := 0
 	for _, rec := range recs {
-		cr, ok := rec.(ContextualRecognizer)
-		if !ok {
-			continue
-		}
 		if _, want := byRecognizer[rec.Name()]; !want {
 			continue
 		}
 		var phrases [][]string
-		for _, entry := range cr.Context() {
-			words := splitWords(entry)
-			if len(words) == 0 {
-				continue
-			}
-			for _, word := range words {
-				longest = max(longest, len(word))
-			}
-			phrases = append(phrases, words)
+		var long int
+		switch cr := rec.(type) {
+		case *PatternRecognizer:
+			phrases, long = cr.contextPhrases, cr.contextLongest
+		case ContextualRecognizer:
+			phrases, long = splitContext(cr.Context())
+		default:
+			continue
 		}
 		if len(phrases) > 0 {
 			byRecognizer[rec.Name()] = phrases
+			longest = max(longest, long)
 		}
 	}
 	if longest == 0 {
@@ -208,6 +206,22 @@ func contextWords(recs []Recognizer, results []Result) (map[string][][]string, i
 	// wordMatches accepts at most two trailing bytes past the context word,
 	// for the plural fold.
 	return byRecognizer, longest + 2
+}
+
+// splitContext splits each context entry into lower-case words (dropping
+// entries with none) and reports the longest word in bytes.
+func splitContext(entries []string) (phrases [][]string, longest int) {
+	for _, entry := range entries {
+		words := splitWords(entry)
+		if len(words) == 0 {
+			continue
+		}
+		for _, word := range words {
+			longest = max(longest, len(word))
+		}
+		phrases = append(phrases, words)
+	}
+	return phrases, longest
 }
 
 // supported reports whether any of the recognizer's context phrases occurs in

@@ -120,6 +120,40 @@ func TestRemoveDuplicates(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("identical span keeps the higher score, earlier on a tie", func(t *testing.T) {
+		got := RemoveDuplicates([]Result{
+			{EntityType: E, Start: 0, End: 5, Score: 0.5, RecognizerName: "a"},
+			{EntityType: E, Start: 0, End: 5, Score: 0.9, RecognizerName: "b"},
+			{EntityType: E, Start: 0, End: 5, Score: 0.9, RecognizerName: "c"},
+		})
+		if len(got) != 1 || got[0].Score != 0.9 || got[0].RecognizerName != "b" {
+			t.Fatalf("want the first 0.9 span, got %+v", got)
+		}
+	})
+
+	t.Run("span contained in an earlier kept span, not the last", func(t *testing.T) {
+		// A=[0,10) and B=[3,12) partially overlap and both survive; C=[4,6)
+		// sits inside both and must go, whichever is compared last.
+		got := RemoveDuplicates([]Result{
+			{EntityType: E, Start: 4, End: 6, Score: 0.9},
+			{EntityType: E, Start: 3, End: 12, Score: 0.5},
+			{EntityType: E, Start: 0, End: 10, Score: 0.5},
+		})
+		if len(got) != 2 || got[0].Start != 0 || got[1].Start != 3 {
+			t.Fatalf("want [0,10) and [3,12), got %+v", got)
+		}
+	})
+
+	t.Run("zero-score container does not suppress", func(t *testing.T) {
+		got := RemoveDuplicates([]Result{
+			{EntityType: E, Start: 0, End: 10, Score: 0.0},
+			{EntityType: E, Start: 2, End: 6, Score: 0.9},
+		})
+		if len(got) != 1 || got[0].Start != 2 {
+			t.Fatalf("want the inner span, got %+v", got)
+		}
+	})
 }
 
 // testEngine builds an engine with two simple recognizers: digit runs (DIGITS,

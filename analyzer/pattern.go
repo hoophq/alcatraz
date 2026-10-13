@@ -1,5 +1,7 @@
 package analyzer
 
+import "regexp/syntax"
+
 // Pattern is a named, compiled regular expression with a base confidence score.
 //
 // By default a match's whole span (group 0) is reported as the entity. Set
@@ -22,6 +24,9 @@ type Pattern struct {
 	// the regex at construction; a text lacking any of them is not scanned.
 	// Zero (nothing required) for patterns backed by a custom Matcher.
 	requires classMask
+	// run is set (min > 0) when the regex is exactly \b\d{min,max}\b, which
+	// the engine serves from one shared digit-run scan instead of the regex.
+	run digitRun
 }
 
 // NewPattern compiles a pattern with the standard library RE2 engine,
@@ -31,10 +36,13 @@ func NewPattern(name, regex string, score float64) (*Pattern, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Pattern{
-		Name: name, Regex: regex, Score: score,
-		matcher: stdMatcher{prog: prog}, prog: prog, requires: patternRequires(regex),
-	}, nil
+	p := &Pattern{Name: name, Regex: regex, Score: score, matcher: stdMatcher{prog: prog}, prog: prog}
+	// regexp.Compile succeeded, so this parse cannot fail.
+	if re, err := syntax.Parse(regex, syntax.Perl); err == nil {
+		p.requires = requiredClasses(re)
+		p.run, _ = parseDigitRun(re)
+	}
+	return p, nil
 }
 
 // MustPattern is like NewPattern but panics on an invalid regex. It is meant

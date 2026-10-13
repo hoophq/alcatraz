@@ -26,6 +26,22 @@ Jump to [Where to optimize](#where-to-optimize) for the ranked list.
 > allocs, down from 91 µs. `NewEngine` 169 → 78 µs. The parity corpus in
 > `bench/` matches byte for byte before and after. The per-row tables below
 > still describe the code before these changes.
+>
+> **Status, round two (2026-10-12).** Everything else on the ranked list for
+> the core path landed; see the ledger under
+> [Where to optimize](#where-to-optimize). Time-1d is a shared digit-run scan
+> (`analyzer/matcher.go`: a pattern whose regex is exactly `\b\d{min,max}\b`
+> is served from one pass over the text per `Analyze`, proven equivalent to
+> the regex by `TestDigitRunsMatchRegex`); Time-2 is a sort-and-sweep
+> `RemoveDuplicates`, O(M log M) and in place; `Match` now holds the
+> stdlib offset slice instead of re-copying it; results append into one
+> engine-owned slice; context phrases are split once in `WithContext`; the
+> allow list is prepared once and reused while the list is unchanged; every
+> validator and `labelBefore` run without heap allocation; the unused
+> capture groups are non-capturing. What remains on the dense path is the
+> stdlib `regexp` scan itself (80 % of CPU) and its one `[]int` per match
+> (80 % of remaining allocations), which the public `regexp` API does not
+> let a caller avoid.
 
 ## Variables
 
@@ -50,19 +66,26 @@ recognizer construction.
 `go test -bench 'BenchmarkAnalyze|BenchmarkNewEngine' -benchmem` in `bench/`,
 Apple M4 Max, Go 1.26, default English engine, no NLP backend:
 
-| Size / density | ns/op | MB/s | B/op | allocs/op | results/op |
+| Size / density | ns/op (before → after) | MB/s | B/op (before → after) | allocs/op (before → after) | results/op |
 |---|---:|---:|---:|---:|---:|
-| 100B / none | 110 k | 0.91 | 1 470 | 53 | 0 |
-| 100B / dense | 139 k | 0.72 | 2 216 | 64 | 0.6 |
-| 1KB / none | 991 k | 1.03 | 1 470 | 53 | 0 |
-| 1KB / dense | 1.05 M | 0.97 | 16 417 | 153 | 8.8 |
-| 10KB / none | 10.3 M | 0.99 | 1 613 | 53 | 0 |
-| 10KB / sparse | 10.7 M | 0.95 | 22 084 | 191 | 12.3 |
-| 10KB / dense | 11.2 M | 0.91 | 153 919 | 596 | 94 |
-| 1MB / none | 1.10 s | 0.96 | 1 338 | 53 | 0 |
-| 1MB / sparse | 1.20 s | 0.88 | 1.8 M | 4 671 | — |
-| 1MB / dense | 1.65 s | 0.64 | 15.5 M | 36 834 | 9 575 |
-| `NewEngine()` | 169 k | — | 459 224 | 3 797 | — |
+| 100B / none | 110 k → 2.8 k | 0.91 → 35.6 | 1 470 → 10 | 53 → 0 | 0 |
+| 100B / dense | 139 k → 34 k | 0.72 → 2.9 | 2 216 → 591 | 64 → 5 | 0.6 |
+| 1KB / none | 991 k → 25 k | 1.03 → 40.2 | 1 470 → 195 | 53 → 0 | 0 |
+| 1KB / dense | 1.05 M → 761 k | 0.97 → 1.35 | 16 417 → 3 529 | 153 → 36 | 8.8 |
+| 10KB / none | 10.3 M → 277 k | 0.99 → 37.0 | 1 613 → 421 | 53 → 0 | 0 |
+| 10KB / sparse | 10.7 M → 8.2 M | 0.95 → 1.25 | 22 084 → 4 375 | 191 → 48 | 12.3 |
+| 10KB / dense | 11.2 M → 8.5 M | 0.91 → 1.20 | 153 919 → 36 012 | 596 → 171 | 94 |
+| 1MB / none | 1.10 s → 28.5 ms | 0.96 → 36.8 | 1 338 → 40 | 53 → 0 | 0 |
+| 1MB / sparse | 1.20 s → 846 ms | 0.88 → 1.24 | 1.8 M → 462 k | 4 671 → 1 269 | — |
+| 1MB / dense | 1.65 s → 899 ms | 0.64 → 1.17 | 15.5 M → 4.67 M | 36 834 → 9 776 | 9 575 |
+| OCR line / prose (60 B, 51-entity filter) | — → 2.0 k | 29.6 | 195 | 0 | 0 |
+| OCR line / digits | — → 50.6 k | 1.19 | 666 | 10 | — |
+| `NewEngine()` | 169 k → 97 k | — | 459 224 → 177 672 | 3 797 → 2 362 | — |
+
+"Before" is the code the per-function tables describe; "after" is the
+current tree (both status rounds below). The parity run in `bench/`
+(`benchgo -mode detect`, 23 851 detections) is byte-identical across the
+two.
 
 Three facts fall out of the table:
 
@@ -456,71 +479,64 @@ Setup-only. `F` = pinned files (6), `B` = their total bytes (~261 MB).
 
 Ranked by measured impact on the default (pattern-only) `Analyze` path, then
 by the per-call allocation count they remove. Each line names the function,
-the evidence, and the change.
+the evidence, the change, and whether it has landed.
 
 ### Time
 
 1. **74 full-text regex passes — `stdMatcher.FindAll` via `PatternRecognizer.Analyze`.**
-   91 % of CPU at 10KB/dense, 69 % at 1MB/dense; throughput is a flat
+   91 % of CPU at 10KB/dense, 69 % at 1MB/dense; throughput was a flat
    ~1 MB/s. Options, cheapest first:
-   - Merge the duplicate digit-run patterns (`\b\d{11}\b` ×6, `\b\d{9}\b`
-     ×3, AUTFN = AUACN, and the `\b\d{8..17}\b` family): one scan, dispatch by
-     length to the validators. Removes ~15 of 74 passes with no semantic
-     change.
-   - Make the unused capture groups non-capturing (`Email` 6, `CreditCard`
-     8, `DateTime` 3 each, `USITIN` 3, `IBAN (spaces)` 2). Fewer ints per
-     match and a cheaper submatch path inside `regexp`.
-   - A per-text class prefilter (text has no digit → skip the ~55
-     digit-only patterns; no `@` → skip Email; no `:` → skip IPv6/URL)
-     costs one O(n) byte scan and skips whole patterns on prose. Safe because
-     a pattern that requires a byte class cannot match text lacking it.
-   - A single combined scan (one alternation, or a tokenizer feeding
-     per-class patterns only to candidate windows) is the big-step win but
-     changes match semantics at boundaries; needs the parity benchmark in
-     `bench/` to prove equivalence.
-2. **`RemoveDuplicates` is O(M²).** 27 % of CPU at 1MB/dense
-   (M ≈ 9 600). Sort by `(EntityType, Start, −End)` and sweep: O(M log M),
-   identical output since only same-type spans ever interact. Also called
-   once per recognizer before the engine-level call; single-pattern
-   recognizers (34 of 52) cannot produce overlaps, so skip it there.
-3. **`labelBefore` on every 8-digit run and UUID** (`BRCEPUnformatted`,
-   `BRPixKey`): `ToLower` + `FieldsFunc` + `Join` per match. Numeric dumps
-   hit this once per 8-digit token.
-4. **`applyAllowList` in regex mode compiles the joined pattern on every
-   call.** Cache the compiled regexp / exact-match set.
+   - ✅ Duplicate digit-run patterns share one compiled program and one scan
+     per `Analyze` (`program`, `scanCache` in `analyzer/matcher.go`).
+   - ✅ Unused capture groups are non-capturing (`Email`, `CreditCard`,
+     `DateTime`, `USITIN`, `IBAN (spaces)`).
+   - ✅ Per-text byte-class prefilter (`analyzer/classes.go`): a pattern
+     whose matches must contain a class the text lacks is not scanned. This
+     is the 35× on prose.
+   - ✅ Shared digit-run scan: the 16 patterns of the exact form
+     `\b\d{min,max}\b` are served from one byte pass per `Analyze`
+     (`digitRuns`, `matchDigitRuns`), no regex at all.
+     `TestDigitRunsMatchRegex` proves equivalence against `regexp` on
+     2 000 random texts. A general combined scan for the other patterns
+     stays undone: it would change boundary semantics.
+   - ⬜ What is left is the stdlib `regexp` scan for the ~55 remaining
+     patterns: 80 % of CPU at 10KB/dense. Further gains need fewer or
+     narrower patterns, not engine work.
+2. ✅ **`RemoveDuplicates` is O(M log M)** — sort by `(EntityType, Start,
+   −End)`, one sweep, in place; was 27 % of CPU at 1MB/dense. Per-recognizer
+   dedup is skipped on the engine path since the engine's pass subsumes it.
+3. ✅ **`labelBefore`** — allocation-free byte walk; differential-fuzzed
+   against the old implementation (300 k windows, 0 mismatches).
+4. ✅ **Allow list** — prepared once (`prepareAllowList`) and reused while
+   `Options.AllowList` is unchanged; 22 allocs/call → 1.
 
 ### Allocations
 
-1. **`RemoveDuplicates` closure on empty input** — 52 of the 53 allocations
-   a zero-result `Analyze` makes. `if len(results) < 2 { return results }`.
-2. **`stdMatcher.FindAll` double copy** — `FindAllStringSubmatchIndex`
-   already allocates one `[]int` per match; the `[]Match`/`[][2]int` re-copy
-   doubles it (49 % of allocated objects at 10KB/dense). Return the stdlib
-   slices or a flat stride buffer.
-3. **`stripSeparators` builds a `strings.Replacer` per credit-card match** —
-   24 % of bytes allocated at 10KB/dense. Delete it; `digitValues` already
-   skips separators.
-4. **`digitValues` allocates an `[]int` (8·s bytes) in 24 of 30 validators.**
-   Stack buffer or byte-wise validation. Watch `validateABN`, which mutates
-   the slice.
-5. **`contextWords` re-splits and lower-cases every context phrase per call**
-   (5.6 % of objects). Do it once in `WithContext`.
-6. **`PatternRecognizer.SupportedEntities` allocates a one-element slice per
-   recognizer per call when `Options.Entities` is set** (+51 allocs
-   measured). Store it on the struct.
-7. **`analyzeWithArtifacts` copies every recognizer's result slice into
-   `all`.** Pre-size or append in place.
-8. **Validators with avoidable string building**: `validateIBAN` (3–4),
-   `validateNINO` (1–2), `validateSSN`/`validateITIN` (`ReplaceAll`),
-   `INAadhaar` (double `digitValues`), `validateESNIE`,
-   `validateFIPersonalCode`, `validateSGFIN`.
+1. ✅ `RemoveDuplicates` closure on empty input — early return.
+2. ✅ `stdMatcher.FindAll` double copy — `Match` adopts the stdlib `[]int`;
+   `NewMatch` is the constructor for custom matchers (`lookaround`).
+3. ✅ `stripSeparators` / `strings.Replacer` per credit-card match — deleted.
+4. ✅ `digitValues` — append-style into a caller's stack array; every
+   validator is `AllocsPerRun == 0` (`TestValidatorsDoNotAllocate`).
+5. ✅ `contextWords` — phrases split once in `WithContext`.
+6. ✅ `PatternRecognizer.SupportedEntities` — slice stored on the struct;
+   `Registry.Recognizers` memoized per filter.
+7. ✅ `analyzeWithArtifacts` — recognizers append into one engine-owned
+   slice (`appendResults`).
+8. ✅ Validator string building — `validateIBAN` streams mod-97 over the
+   original bytes; `validateNINO`, `validateSSN`/`validateITIN`,
+   `INAadhaar`, `validateESNIE`, `validateFIPersonalCode`, `validateSGFIN`
+   index bytes directly.
+9. ⬜ The one `[]int` per match inside `regexp.FindAllStringSubmatchIndex`
+   (80 % of remaining allocations on dense text) — stdlib-internal; no
+   public API returns matches into a caller-owned buffer.
 
 ### Setup
 
-- `NewEngine()` = 169 µs, 459 KB, 3 797 allocs — all 74 regex compiles.
-  `alcatraz.NewEngine("en", "pt")` compiles them twice; the recognizers are
-  language-independent and could be built once and registered under each
-  language.
+- ◐ `NewEngine()` = 97 µs, 178 KB, 2 362 allocs (was 169 µs / 459 KB /
+  3 797): `compileProgram` caches compiled regexes by source, so a second
+  language reuses them; the `Pattern`/recognizer structs are still rebuilt
+  per language.
 
 ### Optional modules
 

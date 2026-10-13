@@ -60,6 +60,12 @@ type program struct {
 	shared atomic.Bool
 }
 
+// programCacheSize bounds programs. The built-in set is 74 sources; the
+// bound exists so a process compiling patterns from variable input (per
+// tenant lists, user recognizers) cannot grow the cache without limit.
+// Past it, patterns still compile and work, they just do not share.
+const programCacheSize = 1024
+
 var (
 	programsMu sync.Mutex
 	programs   = map[string]*program{}
@@ -78,7 +84,9 @@ func compileProgram(regex string) (*program, error) {
 		return nil, err
 	}
 	p := &program{re: re}
-	programs[regex] = p
+	if len(programs) < programCacheSize {
+		programs[regex] = p
+	}
 	return p, nil
 }
 

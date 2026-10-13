@@ -1,6 +1,7 @@
 package analyzer
 
 import (
+	"encoding/binary"
 	"sort"
 	"sync"
 )
@@ -59,12 +60,13 @@ func (r *Registry) Recognizers(language string, entities []string) []Recognizer 
 		return recs
 	}
 	// The key is built in a stack buffer so a cache hit does not allocate;
-	// the map lookup on a []byte-to-string conversion is copy-free.
+	// the map lookup on a []byte-to-string conversion is copy-free. Each
+	// element is length-prefixed, so lists that differ only in where an
+	// element boundary falls cannot share a key.
 	var buf [1024]byte
-	key := append(buf[:0], language...)
+	key := appendKeyed(buf[:0], language)
 	for _, e := range entities {
-		key = append(key, 0)
-		key = append(key, e...)
+		key = appendKeyed(key, e)
 	}
 	r.mu.RLock()
 	out, ok := r.filtered[string(key)]
@@ -87,6 +89,13 @@ func (r *Registry) Recognizers(language string, entities []string) []Recognizer 
 	r.filtered[string(key)] = out
 	r.mu.Unlock()
 	return out
+}
+
+// appendKeyed appends s to key preceded by its length, as an unambiguous
+// encoding of a string list.
+func appendKeyed(key []byte, s string) []byte {
+	key = binary.AppendUvarint(key, uint64(len(s)))
+	return append(key, s...)
 }
 
 // SupportedEntities returns the sorted, de-duplicated set of entity types a

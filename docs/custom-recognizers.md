@@ -52,3 +52,25 @@ p := analyzer.MustPattern("user", `user=(\w+)`, 0.9).WithGroup(1)
 
 None of the 45 built-ins need more than A + B: they rely on `\b` anchors plus
 validators and same-entity dedup.
+
+## Custom matchers
+
+`analyzer.NewPatternMatcher` backs a pattern with your own `analyzer.Matcher`
+(the `lookaround` module is one). `FindAll` returns `analyzer.Match` values
+built with `analyzer.NewMatch(loc []int)`, where `loc` holds start/end byte
+offset pairs in `regexp.FindStringSubmatchIndex` layout — group 0 first,
+`-1, -1` for a group that did not participate:
+
+```go
+func (m myMatcher) FindAll(text string) []analyzer.Match {
+    var out []analyzer.Match
+    for _, span := range m.scan(text) { // your engine, byte offsets
+        out = append(out, analyzer.NewMatch([]int{span.start, span.end}))
+    }
+    return out
+}
+```
+
+`Match` used to expose a `Groups [][2]int` field; `NewMatch` replaces it so
+the default matcher can hand the standard library's offsets through without
+copying.

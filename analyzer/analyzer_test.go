@@ -154,6 +154,59 @@ func TestRemoveDuplicates(t *testing.T) {
 			t.Fatalf("want the inner span, got %+v", got)
 		}
 	})
+
+	t.Run("ties between types keep input order", func(t *testing.T) {
+		// Same span, same score, two types, in an order the alphabet
+		// would reverse: the anonymizer resolves such overlaps by order,
+		// so de-duplication must not reorder them.
+		in := []Result{
+			{EntityType: P, Start: 0, End: 5, Score: 0.5},
+			{EntityType: E, Start: 0, End: 5, Score: 0.5},
+		}
+		got := RemoveDuplicates(in)
+		if len(got) != 2 || got[0].EntityType != P || got[1].EntityType != E {
+			t.Fatalf("want P then E, got %+v", got)
+		}
+	})
+
+	t.Run("input slice is not modified", func(t *testing.T) {
+		in := []Result{
+			{EntityType: E, Start: 5, End: 9, Score: 0.5},
+			{EntityType: E, Start: 0, End: 3, Score: 0.9},
+		}
+		orig := append([]Result(nil), in...)
+		got := RemoveDuplicates(in)
+		if len(got) != 2 || got[0].Start != 0 {
+			t.Fatalf("got %+v", got)
+		}
+		for i := range in {
+			if in[i] != orig[i] {
+				t.Fatalf("input modified at %d: %+v, was %+v", i, in[i], orig[i])
+			}
+		}
+	})
+
+	t.Run("many types each keep their own containment", func(t *testing.T) {
+		// More types than the stack table holds, interleaved, each with a
+		// container and an inner span.
+		var in []Result
+		for i := range 20 {
+			typ := string(rune('A' + i))
+			in = append(in,
+				Result{EntityType: typ, Start: 0, End: 10, Score: 0.5},
+				Result{EntityType: typ, Start: 2, End: 4, Score: 0.9},
+			)
+		}
+		got := RemoveDuplicates(in)
+		if len(got) != 20 {
+			t.Fatalf("want 20 containers, got %d: %+v", len(got), got)
+		}
+		for _, r := range got {
+			if r.Start != 0 || r.End != 10 {
+				t.Fatalf("inner span survived: %+v", r)
+			}
+		}
+	})
 }
 
 // testEngine builds an engine with two simple recognizers: digit runs (DIGITS,
@@ -239,6 +292,57 @@ func TestRegistryRecognizersCache(t *testing.T) {
 	reg.Add("en", more)
 	if got := reg.Recognizers("en", filter); len(got) != 3 || got[2] != Recognizer(more) {
 		t.Errorf("after Add: %v, want [digits words more]", got)
+	}
+}
+
+// Entity names are not restricted, so the cache key must not be fooled by
+// a name that contains whatever separates the key's elements.
+func TestRegistryRecognizersCacheKeyIsUnambiguous(t *testing.T) {
+	reg := NewRegistry("en")
+	ab := NewPatternRecognizer("ab", "a\x00b", "en", []*Pattern{MustPattern("x", `x`, 0.4)})
+	a := NewPatternRecognizer("a", "a", "en", []*Pattern{MustPattern("x", `x`, 0.4)})
+	b := NewPatternRecognizer("b", "b", "en", []*Pattern{MustPattern("x", `x`, 0.4)})
+	reg.Add("en", ab)
+	reg.Add("en", a)
+	reg.Add("en", b)
+
+	if got := reg.Recognizers("en", []string{"a\x00b"}); len(got) != 1 || got[0] != Recognizer(ab) {
+		t.Fatalf("[a\\x00b]: got %v", got)
+	}
+	if got := reg.Recognizers("en", []string{"a", "b"}); len(got) != 2 || got[0] != Recognizer(a) || got[1] != Recognizer(b) {
+		t.Fatalf("[a b] after [a\\x00b] was cached: got %v", got)
+	}
+}
+
+// The context words are a snapshot: neither the caller's slice nor the one
+// Context returns can change what the enhancer sees.
+func TestWithContextSnapshots(t *testing.T) {
+	words := []string{"card"}
+	rec := NewPatternRecognizer("r", "DIGITS", "en", []*Pattern{MustPattern("d", `\d+`, 0.3)}).
+		WithContext(words...)
+	words[0] = "other"
+	rec.Context()[0] = "another"
+
+	reg := NewRegistry("en")
+	reg.Add("en", rec)
+	got := NewEngine(reg, []string{"en"}).Analyze("card 1234", Options{})
+	if len(got) != 1 || got[0].Score < 0.6 {
+		t.Fatalf("want the card context boost, got %+v", got)
+	}
+	if ctx := rec.Context(); len(ctx) != 1 || ctx[0] != "card" {
+		t.Fatalf("Context() = %v, want [card]", ctx)
+	}
+}
+
+// A slice handed out by SupportedEntities is the caller's to change.
+func TestSupportedEntitiesIsACopy(t *testing.T) {
+	rec := NewPatternRecognizer("r", "DIGITS", "en", []*Pattern{MustPattern("d", `\d+`, 0.3)})
+	rec.SupportedEntities()[0] = "OTHER"
+	if got := rec.SupportedEntities(); got[0] != "DIGITS" {
+		t.Fatalf("SupportedEntities = %v, want [DIGITS]", got)
+	}
+	if got := rec.Analyze("1234", []string{"DIGITS"}); len(got) != 1 {
+		t.Fatalf("filtered Analyze after mutation: %+v", got)
 	}
 }
 

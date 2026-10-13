@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 
 	"github.com/gomlx/go-huggingface/tokenizers/api"
@@ -411,9 +412,9 @@ type Recognizer struct {
 // Name implements analyzer.Recognizer.
 func (r *Recognizer) Name() string { return "NERecognizer" }
 
-// SupportedEntities implements analyzer.Recognizer. The returned slice is
-// shared across calls and must be treated as read-only.
-func (r *Recognizer) SupportedEntities() []string { return r.supported }
+// SupportedEntities implements analyzer.Recognizer. It returns a fresh copy
+// of the set computed at construction.
+func (r *Recognizer) SupportedEntities() []string { return slices.Clone(r.supported) }
 
 // SupportedLanguage implements analyzer.Recognizer.
 func (r *Recognizer) SupportedLanguage() string { return r.language }
@@ -422,7 +423,7 @@ func (r *Recognizer) SupportedLanguage() string { return r.language }
 // inference error yields no results, matching the engine's degrade-to-
 // patterns behavior.
 func (r *Recognizer) Analyze(text string, entities []string) []analyzer.Result {
-	if entities != nil && !supportsAny(r.SupportedEntities(), entities) {
+	if entities != nil && !supportsAny(r.supported, entities) {
 		return nil
 	}
 	artifacts, err := r.engine.ProcessText(text, r.language)

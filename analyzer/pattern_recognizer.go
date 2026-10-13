@@ -1,5 +1,7 @@
 package analyzer
 
+import "slices"
+
 // Validator inspects a matched substring and decides whether it is a true
 // positive. It is used for entities with a verifiable structure (checksums,
 // range rules). Returning true promotes the match to MaxScore; returning false
@@ -53,12 +55,13 @@ func NewPatternRecognizer(name, entity, language string, patterns []*Pattern) *P
 // case-insensitive and by whole word, so multi-word entries are matched as
 // phrases. No NLP backend is required.
 //
-// Returns the recognizer for chaining.
+// The words are copied: later changes to the caller's slice do not reach
+// the recognizer. Returns the recognizer for chaining.
 func (pr *PatternRecognizer) WithContext(words ...string) *PatternRecognizer {
-	pr.context = words
+	pr.context = slices.Clone(words)
 	// Split and lower-case once here rather than on every Enhance call;
 	// see contextWords.
-	pr.contextPhrases, pr.contextLongest = splitContext(words)
+	pr.contextPhrases, pr.contextLongest = splitContext(pr.context)
 	return pr
 }
 
@@ -77,15 +80,16 @@ func (pr *PatternRecognizer) WithContextValidator(v ContextValidator) *PatternRe
 	return pr
 }
 
-// Context returns the recognizer's context words.
-func (pr *PatternRecognizer) Context() []string { return pr.context }
+// Context returns a copy of the recognizer's context words.
+func (pr *PatternRecognizer) Context() []string { return slices.Clone(pr.context) }
 
 // Name implements Recognizer.
 func (pr *PatternRecognizer) Name() string { return pr.name }
 
-// SupportedEntities implements Recognizer. The returned slice is shared
-// across calls and must be treated as read-only.
-func (pr *PatternRecognizer) SupportedEntities() []string { return pr.entities }
+// SupportedEntities implements Recognizer. It returns a fresh slice; the
+// engine's filtered path reads the recognizer's own copy and does not call
+// it, so this allocates only on a registry cache miss.
+func (pr *PatternRecognizer) SupportedEntities() []string { return slices.Clone(pr.entities) }
 
 // SupportedLanguage implements Recognizer.
 func (pr *PatternRecognizer) SupportedLanguage() string { return pr.language }
@@ -105,7 +109,7 @@ func (pr *PatternRecognizer) Analyze(text string, entities []string) []Result {
 		return nil
 	}
 	var scans scanCache
-	return RemoveDuplicates(pr.appendResults(nil, text, byteClasses(text), &scans))
+	return removeDuplicates(pr.appendResults(nil, text, byteClasses(text), &scans))
 }
 
 // appendResults is Analyze after the entity filter and before

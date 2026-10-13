@@ -83,7 +83,7 @@ Engine.Analyze(text, o)
    │       validator(match)                            O(s)       0 allocs
    │       contextValidator(text, start, end)          O(1)       0 allocs
    ├─ WordContextEnhancer.Enhance                   O(M·k)     1 map + 1 window slice per call
-   ├─ RemoveDuplicates (all results)                O(M log M) in place
+   ├─ removeDuplicates (all results)                O(M log M) in place; exported RemoveDuplicates copies first
    ├─ threshold filter                              O(M)       in place
    ├─ allowList.apply                               O(M)       prepared list reused across calls
    └─ fill Result.Text                              O(M)       substrings, no copy
@@ -110,7 +110,7 @@ Engine.Analyze(text, o)
 | `Analyze(text, o)` :88 | hot | `Recognizers` + optional `ProcessText` + `analyzeWithArtifacts` | 0 own | Entry point. |
 | `AnalyzeBatch(texts, o)` :114 | hot | T × `analyzeWithArtifacts` + one `ProcessTexts` when batchable | `artifacts []*NlpArtifacts` (T), `results [][]Result` (T) | - |
 | `wantsArtifacts(recs)` :146 | hot (only when an NLP engine is set) | O(R) type assertions | 0 | - |
-| `analyzeWithArtifacts(text, o, recs, artifacts)` :158 | hot | `byteClasses` O(n) + Σ `appendResults` + `Enhance` + `RemoveDuplicates` O(M log M) + O(M) threshold + O(M) allow list | one `scanCache` on the stack (escape analysis verified); `all` grows by `append` as recognizers write into it (~log₂ M reallocs); non-pattern recognizers' slices are still copied in | The engine-level dedup subsumes the per-recognizer one, which is skipped on this path. |
+| `analyzeWithArtifacts(text, o, recs, artifacts)` :158 | hot | `byteClasses` O(n) + Σ `appendResults` + `Enhance` + `removeDuplicates` O(M log M) + O(M) threshold + O(M) allow list | one `scanCache` on the stack (escape analysis verified); `all` grows by `append` as recognizers write into it (~log₂ M reallocs); non-pattern recognizers' slices are still copied in | The engine-level dedup subsumes the per-recognizer one, which is skipped on this path. |
 | `prepareAllowList(o)` :226 | hot when `AllowList` set | O(A) element-wise compare on a hit; O(A) + `regexp.Compile` on a miss | hit: 0; miss: `slices.Clone` of the list + compiled regexp or `map[string]struct{}` | Single cached entry (`atomic.Pointer`): the common case is one list on every call. Alternating lists rebuild each time, as before. |
 | `allowList.apply(results, text)` :245 | hot when `AllowList` set | O(M·\|re\|) regex mode, O(M) exact | 0 (in place) | - |
 
@@ -120,7 +120,7 @@ Engine.Analyze(text, o)
 |---|---|---|---|---|
 | `NewRegistry(languages...)` :25 | setup | O(langs) | map + slice copy | - |
 | `Add(language, rec)` :43 | setup | O(1) amortized | slice growth; clears the filter cache | - |
-| `Recognizers(language, entities)` :56 | hot | `entities == nil`: O(1). Filtered: O(E) key build in a 1 KiB stack buffer + map hit; O(R·E) on first use of a filter | hit: 0 (key exceeding the stack buffer spills once per call); miss: `out` slice + cache entry. Cache dropped (not evicted) past 64 entries | `SupportedEntities()` no longer allocates either. |
+| `Recognizers(language, entities)` :57 | hot | `entities == nil`: O(1). Filtered: O(E) key build in a 1 KiB stack buffer + map hit; O(R·E) on first use of a filter | hit: 0 (key exceeding the stack buffer spills once per call); miss: `out` slice + cache entry. Cache dropped (not evicted) past 64 entries | Key elements are length-prefixed (`appendKeyed`), so an entity name containing the separator cannot alias another list. |
 | `SupportedEntities(language)` :94 | - | O(R + S log S) | `seen` map, `out` slice, sort | - |
 | `Languages()` :110 | - | O(langs) | 1 slice copy | - |
 
@@ -151,31 +151,33 @@ Engine.Analyze(text, o)
 
 | Function | Path | Time | Allocations | Note |
 |---|---|---|---|---|
-| `NewMatch(loc)` :24 / `Match.NumGroups()` :27 / `Match.Span(g)` :31 | hot | O(1) | 0 | `Match` holds the stdlib start/end pair slice; group g is `loc[2g], loc[2g+1]`. |
-| `compileProgram(regex)` :69 | setup | map hit O(1), else `regexp.Compile` | program on first use; the map is process-wide and never evicted | A long-lived process compiling patterns from variable input retains every distinct source. |
-| `stdMatcher.FindAll(text)` :92 | **hot, per non-shared regex pattern** | **O(n·\|re\|)**; bitstate backtracker under Go's size cap, NFA above. `\b`-prefixed patterns get no literal-prefix skip. | `FindAllStringSubmatchIndex`: outer slice (1) + one `[]int` per match (m); `[]Match` (1) adopting them. **m + 2 allocs**, no re-copy. The per-match `[]int` is stdlib-internal. | 80 % of CPU at 10KB/dense. Unused capture groups are now non-capturing, so each row is 2 ints. |
-| `parseDigitRun(re)` :118 | setup | O(1) on the parse tree | 0 | Accepts exactly `Concat[\b, Repeat{min≥1,max}([0-9]), \b]` or `\b\d+\b`. |
-| `digitRuns(buf, text)` :154 / `countDigitRuns(text)` :181 | hot, once per `Analyze` when any digit-run pattern survives the class filter | O(n) byte walk | 0 into the stack buffer (32 runs); heap slice only beyond that | Maximal digit runs with no ASCII word byte on either side — exactly `\b\d+\b`. `TestDigitRunsMatchRegex` checks equivalence against `regexp` on 2 000 random texts. |
-| `matchDigitRuns(runs, r)` :202 | hot, per digit-run pattern | O(runs) | 2 (one flat offset buffer + `[]Match`), 0 when nothing matches | Replaces the regex for 16 built-in patterns. |
-| `scanCache.findAll(p, text)` :249 | hot, per pattern | digit run → above; shared program → O(8) linear probe; else `FindAll` | 0 own | Lives on the engine's stack frame (`-gcflags=-m`: `scans does not escape`). 8 shared-program slots; the built-in set uses 4. |
+| `NewMatch(loc)` :24 / `Match.NumGroups()` :27 / `Match.Span(g)` :31 | hot | O(1) | 0 | `Match` holds the stdlib start/end pair slice; group g is `loc[2g], loc[2g+1]`. **Breaking for custom `Matcher`s**: the exported `Groups [][2]int` field is gone; build matches with `NewMatch` (see `lookaround`). |
+| `compileProgram(regex)` :75 | setup | map hit O(1), else `regexp.Compile` | program on first use; the process-wide map stops growing at `programCacheSize` (1 024) | Patterns past the bound still compile and work, they just do not share a scan. |
+| `stdMatcher.FindAll(text)` :100 | **hot, per non-shared regex pattern** | **O(n·\|re\|)**; bitstate backtracker under Go's size cap, NFA above. `\b`-prefixed patterns get no literal-prefix skip. | `FindAllStringSubmatchIndex`: outer slice (1) + one `[]int` per match (m); `[]Match` (1) adopting them. **m + 2 allocs**, no re-copy. The per-match `[]int` is stdlib-internal. | 80 % of CPU at 10KB/dense. Unused capture groups are now non-capturing, so each row is 2 ints. |
+| `parseDigitRun(re)` :126 | setup | O(1) on the parse tree | 0 | Accepts exactly `Concat[\b, Repeat{min≥1,max}([0-9]), \b]` or `\b\d+\b`. |
+| `digitRuns(buf, text)` :162 / `countDigitRuns(text)` :189 | hot, once per `Analyze` when any digit-run pattern survives the class filter | O(n) byte walk | 0 into the stack buffer (32 runs); heap slice only beyond that | Maximal digit runs with no ASCII word byte on either side — exactly `\b\d+\b`. `TestDigitRunsMatchRegex` checks equivalence against `regexp` on 2 000 random texts. |
+| `matchDigitRuns(runs, r)` :210 | hot, per digit-run pattern | O(runs) | 2 (one flat offset buffer + `[]Match`), 0 when nothing matches | Replaces the regex for 16 built-in patterns. |
+| `scanCache.findAll(p, text)` :257 | hot, per pattern | digit run → above; shared program → O(8) linear probe; else `FindAll` | 0 own | Lives on the engine's stack frame (`-gcflags=-m`: `scans does not escape`). 8 shared-program slots; the built-in set uses 4. |
 
 ### pattern_recognizer.go
 
 | Function | Path | Time | Allocations | Note |
 |---|---|---|---|---|
 | `NewPatternRecognizer(...)` :38 | setup | O(1) | struct + one-element `entities` slice | - |
-| `WithContext(words...)` :57 | setup | O(Σ\|entry\|) `splitContext` | phrases + lower-cased words, once | Was per `Enhance`. |
-| `WithValidator` / `WithContextValidator` :67-75 | setup | O(1) | 0 | - |
-| `Context()` / `Name()` / `SupportedEntities()` / `SupportedLanguage()` :81-91 | hot | O(1) | 0 | `SupportedEntities` returns the shared slice; read-only by contract. |
-| `Analyze(text, entities)` :103 | hot only when called directly (not via the engine) | `byteClasses` + `appendResults` + `RemoveDuplicates` | own `scanCache` on the stack; `results` growth | Public contract keeps the per-recognizer dedup. |
-| `appendResults(dst, text, classes, scans)` :117 | **hot, ×R** | per pattern: class check O(1); `scans.findAll`; per match validator O(s) + contextValidator | appends `Result` (72 B) into the caller's slice; validators allocate nothing | Engine path. |
+| `WithContext(words...)` :60 | setup | O(Σ\|entry\|) `splitContext` | copy of `words` + phrases + lower-cased words, once | A snapshot: later changes to the caller's slice do not reach the recognizer. Was split per `Enhance`. |
+| `WithValidator` / `WithContextValidator` :70-78 | setup | O(1) | 0 | - |
+| `Context()` / `SupportedEntities()` :84-92 | public | O(1) | 1 copy each | Fresh slices; the engine and registry read the recognizer's own fields, so neither is on the hot path. |
+| `Name()` / `SupportedLanguage()` :87-95 | hot | O(1) | 0 | - |
+| `Analyze(text, entities)` :107 | hot only when called directly (not via the engine) | `byteClasses` + `appendResults` + `removeDuplicates` | own `scanCache` on the stack; `results` growth | Public contract keeps the per-recognizer dedup. |
+| `appendResults(dst, text, classes, scans)` :121 | **hot, ×R** | per pattern: class check O(1); `scans.findAll`; per match validator O(s) + contextValidator | appends `Result` (72 B) into the caller's slice; validators allocate nothing | Engine path. |
 
 ### result.go
 
 | Function | Path | Time | Allocations | Note |
 |---|---|---|---|---|
 | `Result.Len` / `Intersects` / `ContainedIn` / `Contains` / `EqualIndices` :33-55 | hot | O(1) | 0 | `Result` is 72 bytes; sorts move all of it. |
-| `RemoveDuplicates(results)` :70 | **hot, once per `Analyze`** | `< 2` results: O(1). Else **O(M log M)**: stable sort by `(EntityType, Start, −End)`, one sweep, stable sort by `(−Score, Start, −Len)` | **0**: sorts and sweep are in place on the input slice (`slices.SortStableFunc`, no reflection) | Kept spans of a type have strictly increasing starts and ends, so containment in any kept span implies containment in the last — one comparison per result. Identical spans keep the higher score, earlier on a tie. The input slice is reused. |
+| `RemoveDuplicates(results)` :66 | public | `slices.Clone` + `removeDuplicates` | one copy of the input | The input is left untouched. |
+| `removeDuplicates(results)` :80 | **hot, once per `Analyze`** | `< 2` results: O(1). Else **O(M log M)**: stable sort by `(Start, −End)`, one sweep with a per-type last-kept table (linear, T types), stable sort by `(−Score, Start, −Len)` | **0**: in place on the input slice (`slices.SortStableFunc`, no reflection); the per-type table is a 16-entry stack array, heap only beyond | Types are not part of the sort key, so results tied on score, start and length keep their input order across types — the anonymizer resolves such overlaps by order. Kept spans of a type have strictly increasing ends, so containment in any kept span of that type implies containment in its last one. Identical spans keep the higher score, earlier on a tie. |
 
 ### context.go
 
@@ -489,9 +491,11 @@ the evidence, the change, and whether it has landed.
    - ⬜ What is left is the stdlib `regexp` scan for the ~55 remaining
      patterns: 80 % of CPU at 10KB/dense. Further gains need fewer or
      narrower patterns, not engine work.
-2. ✅ **`RemoveDuplicates` is O(M log M)** — sort by `(EntityType, Start,
-   −End)`, one sweep, in place; was 27 % of CPU at 1MB/dense. Per-recognizer
-   dedup is skipped on the engine path since the engine's pass subsumes it.
+2. ✅ **`RemoveDuplicates` is O(M log M)** — sort by `(Start, −End)`, one
+   sweep with a per-type last-kept table, in place; was 27 % of CPU at
+   1MB/dense. The type is not in the sort key so ties across types keep
+   input order (the anonymizer depends on it). Per-recognizer dedup is
+   skipped on the engine path since the engine's pass subsumes it.
 3. ✅ **`labelBefore`** — allocation-free byte walk; differential-fuzzed
    against the old implementation (300 k windows, 0 mismatches).
 4. ✅ **Allow list** — prepared once (`prepareAllowList`) and reused while
@@ -500,8 +504,11 @@ the evidence, the change, and whether it has landed.
 ### Allocations
 
 1. ✅ `RemoveDuplicates` closure on empty input — early return.
-2. ✅ `stdMatcher.FindAll` double copy — `Match` adopts the stdlib `[]int`;
-   `NewMatch` is the constructor for custom matchers (`lookaround`).
+2. ✅ `stdMatcher.FindAll` double copy — `Match` adopts the stdlib `[]int`.
+   **Breaking**: the exported `Match.Groups` field is gone; custom
+   `Matcher`s build matches with `NewMatch(loc []int)` (`lookaround` is
+   the reference). The exported `RemoveDuplicates` still copies its
+   input; the engine uses the in-place `removeDuplicates`.
 3. ✅ `stripSeparators` / `strings.Replacer` per credit-card match — deleted.
 4. ✅ `digitValues` — append-style into a caller's stack array; every
    validator is `AllocsPerRun == 0` (`TestValidatorsDoNotAllocate`).

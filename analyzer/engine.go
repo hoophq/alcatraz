@@ -182,7 +182,7 @@ func (e *Engine) analyzeWithArtifacts(text string, o Options, recs []Recognizer,
 		all = e.context.Enhance(text, all, recs, artifacts)
 	}
 
-	results := RemoveDuplicates(all)
+	results := removeDuplicates(all)
 
 	threshold := e.threshold
 	if o.Threshold != nil {

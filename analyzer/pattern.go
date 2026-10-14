@@ -27,6 +27,10 @@ type Pattern struct {
 	// run is set (min > 0) when the regex is exactly \b\d{min,max}\b, which
 	// the engine serves from one shared digit-run scan instead of the regex.
 	run digitRun
+	// win is set (ok) when every match must sit in a digit-bearing run of a
+	// known alphabet, so the engine runs the regex on those runs only; see
+	// window. Zero for custom Matchers and patterns the shape excludes.
+	win window
 }
 
 // NewPattern compiles a pattern with the standard library RE2 engine,
@@ -41,6 +45,7 @@ func NewPattern(name, regex string, score float64) (*Pattern, error) {
 	if re, err := syntax.Parse(regex, syntax.Perl); err == nil {
 		p.requires = requiredClasses(re)
 		p.run, _ = parseDigitRun(re)
+		p.win = parseWindow(re, p.requires)
 	}
 	return p, nil
 }

@@ -5,6 +5,8 @@ import (
 	"regexp/syntax"
 	"sync"
 	"sync/atomic"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Match is a single regex match expressed in byte offsets: group 0 is the
@@ -228,11 +230,220 @@ func matchDigitRuns(runs []int, r digitRun) []Match {
 	return matches
 }
 
+// window describes a pattern whose matches can be found by scanning only the
+// neighbourhood of each digit run rather than the whole text. It holds for
+// any regex that requires a digit: every match is then non-empty and made
+// of bytes from a known class alphabet, so it sits inside one maximal
+// alphabet run, and that run contains a digit. The engine runs the original
+// regex over each digit-bearing alphabet run plus one byte of context and
+// gets the matches the full text would give, because that byte is all the
+// context RE2 reads past a match: \b and \B inspect one rune each side, and
+// ^ $ \A \z (?m) can only disagree with the full text at the context bytes
+// themselves — positions a match path reaches only by starting or ending
+// on a byte outside the alphabet, which no match does. 56 of the built-in
+// patterns are served this way (15 more take the digit-run shortcut), and
+// on a prose line most of their runs are rejected by length or class
+// before the regex is even called.
+type window struct {
+	ok bool
+	// alphabet is the class set every match byte belongs to; a run extends
+	// through bytes whose class intersects it. It always holds classDigit —
+	// a required class is in every match — so a digit run is never split
+	// by an alphabet run, which findAll relies on.
+	alphabet classMask
+	// minLen is a lower bound on a match's byte length: shorter runs cannot
+	// hold one.
+	minLen int
+}
+
+// parseWindow derives the window shape from a parsed regex, given the
+// classes its matches require.
+func parseWindow(re *syntax.Regexp, requires classMask) window {
+	if requires&classDigit == 0 {
+		return window{}
+	}
+	return window{ok: true, alphabet: matchAlphabet(re), minLen: minMatchLen(re)}
+}
+
+// minMatchLen is a lower bound, in bytes, on the length of any match of re.
+func minMatchLen(re *syntax.Regexp) int {
+	switch re.Op {
+	case syntax.OpLiteral:
+		n := 0
+		fold := re.Flags&syntax.FoldCase != 0
+		for _, r := range re.Rune {
+			l := utf8.RuneLen(r)
+			if fold {
+				// The fold orbit can mix widths ('k' and the 3-byte
+				// Kelvin sign); the shortest member bounds the match.
+				for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+					l = min(l, utf8.RuneLen(f))
+				}
+			}
+			n += max(l, 1)
+		}
+		return n
+	case syntax.OpCharClass:
+		// Ranges ascend and UTF-8 width is monotone in the code point, so
+		// the lowest member is the shortest; a negative RuneLen (an invalid
+		// code point) still costs at least one byte.
+		if len(re.Rune) == 0 {
+			return 0
+		}
+		return max(utf8.RuneLen(re.Rune[0]), 1)
+	case syntax.OpAnyCharNotNL, syntax.OpAnyChar:
+		return 1
+	case syntax.OpCapture, syntax.OpPlus:
+		return minMatchLen(re.Sub[0])
+	case syntax.OpRepeat:
+		return re.Min * minMatchLen(re.Sub[0])
+	case syntax.OpConcat:
+		n := 0
+		for _, sub := range re.Sub {
+			n += minMatchLen(sub)
+		}
+		return n
+	case syntax.OpAlternate:
+		n := minMatchLen(re.Sub[0])
+		for _, sub := range re.Sub[1:] {
+			n = min(n, minMatchLen(sub))
+		}
+		return n
+	}
+	// Star, quest, empty match and zero-width assertions can match nothing.
+	return 0
+}
+
+// digitGroups is digitRuns without the \b condition: the start/end pairs of
+// every maximal run of ASCII digits in text, into buf, returning how many
+// ints it wrote or -1 when buf is too small. The windowed scan starts from
+// these, so it needs the runs letters touch as well.
+func digitGroups(buf []int, text string) int {
+	n := 0
+	for i := 0; i < len(text); {
+		if text[i] < '0' || text[i] > '9' {
+			i++
+			continue
+		}
+		start := i
+		for i < len(text) && text[i] >= '0' && text[i] <= '9' {
+			i++
+		}
+		if n+2 > len(buf) {
+			return -1
+		}
+		buf[n], buf[n+1] = start, i
+		n += 2
+	}
+	return n
+}
+
+// countDigitGroups is digitGroups without a buffer.
+func countDigitGroups(text string) int {
+	n := 0
+	for i := 0; i < len(text); {
+		if text[i] < '0' || text[i] > '9' {
+			i++
+			continue
+		}
+		for i < len(text) && text[i] >= '0' && text[i] <= '9' {
+			i++
+		}
+		n += 2
+	}
+	return n
+}
+
+// windowClass is byteClass with classOther for the classless bytes, so
+// that a run can be extended through them when the alphabet admits them.
+func windowClass(c byte) classMask {
+	if m := byteClass[c]; m != 0 {
+		return m
+	}
+	return classOther
+}
+
+// findAll returns the matches of re in text, in order, by running it over
+// each maximal alphabet run that holds a digit run — the only places a
+// match can be — widened by one byte each side for \b. groups are the
+// digit runs of text as digitGroups reports them. A run is skipped without
+// a regex call when it is shorter than any match or lacks a class every
+// match requires; both tests are exact for the run, and a match is a
+// substring of its run, so neither can hide one. Offsets come back in text
+// coordinates: the stdlib's per-match slices are shifted in place.
+func (w window) findAll(re *regexp.Regexp, requires classMask, groups []int, text string) []Match {
+	var matches []Match
+	covered := 0
+	for i := 0; i < len(groups); i += 2 {
+		start, end := groups[i], groups[i+1]
+		if start < covered {
+			// Inside the run grown from an earlier digit group: digits
+			// are in the alphabet, so that run swallowed this one whole.
+			continue
+		}
+		mask := classDigit
+		for start > 0 {
+			cls := windowClass(text[start-1])
+			if cls&w.alphabet == 0 {
+				break
+			}
+			mask |= cls
+			start--
+		}
+		for end < len(text) {
+			cls := windowClass(text[end])
+			if cls&w.alphabet == 0 {
+				break
+			}
+			mask |= cls
+			end++
+		}
+		covered = end
+		if end-start < w.minLen || mask&requires != requires {
+			continue
+		}
+		lo, hi := start, end
+		if lo > 0 {
+			lo--
+		}
+		if hi < len(text) {
+			hi++
+		}
+		// Most runs hold one match at most, so take the first alone — the
+		// same leftmost match FindAll would list first — and only when the
+		// rest of the run could still fit a whole match ask for the full
+		// list, which costs the stdlib's [][]int wrapper on top.
+		loc := re.FindStringSubmatchIndex(text[lo:hi])
+		if loc == nil {
+			continue
+		}
+		if end-(lo+loc[1]) < w.minLen {
+			matches = append(matches, shiftMatch(loc, lo))
+			continue
+		}
+		for _, loc := range re.FindAllStringSubmatchIndex(text[lo:hi], -1) {
+			matches = append(matches, shiftMatch(loc, lo))
+		}
+	}
+	return matches
+}
+
+// shiftMatch moves a window-relative match to text coordinates, in place.
+func shiftMatch(loc []int, by int) Match {
+	for j, v := range loc {
+		if v >= 0 {
+			loc[j] = v + by
+		}
+	}
+	return Match{loc: loc}
+}
+
 // scanCache memoizes scans for the duration of one Analyze call: FindAll
 // per shared program, so a text is scanned once for every pattern that uses
-// the same regex, and the digit runs that every \b\d{n}\b pattern selects
-// from. It lives on the caller's stack; programs beyond its capacity are
-// simply scanned again, and digit runs beyond runsBuf go to the heap.
+// the same regex; the digit runs that every \b\d{n}\b pattern selects from;
+// and the digit groups the windowed patterns grow their runs from. It lives
+// on the caller's stack; programs beyond its capacity are simply scanned
+// again, and runs beyond the stack buffers go to the heap.
 type scanCache struct {
 	n       int
 	entries [8]scanEntry
@@ -245,6 +456,13 @@ type scanCache struct {
 	runsN    int
 	runsBuf  [64]int
 	runsHeap []int
+
+	// The same layout for digitGroups, which the windowed scan needs
+	// unfiltered by \b.
+	ranGroups  bool
+	groupsN    int
+	groupsBuf  [64]int
+	groupsHeap []int
 }
 
 type scanEntry struct {
@@ -272,17 +490,39 @@ func (s *scanCache) findAll(p *Pattern, text string) []Match {
 		return matchDigitRuns(runs, p.run)
 	}
 	if p.prog == nil || !p.prog.shared.Load() {
-		return p.matcher.FindAll(text)
+		return s.scan(p, text)
 	}
 	for i := range s.n {
 		if s.entries[i].prog == p.prog {
 			return s.entries[i].matches
 		}
 	}
-	matches := p.matcher.FindAll(text)
+	matches := s.scan(p, text)
 	if s.n < len(s.entries) {
 		s.entries[s.n] = scanEntry{prog: p.prog, matches: matches}
 		s.n++
 	}
 	return matches
+}
+
+// scan is one uncached pass of p over text: the windowed scan when the
+// pattern's shape allows it, the matcher's full scan otherwise.
+func (s *scanCache) scan(p *Pattern, text string) []Match {
+	if !p.win.ok {
+		return p.matcher.FindAll(text)
+	}
+	if !s.ranGroups {
+		if n := digitGroups(s.groupsBuf[:], text); n >= 0 {
+			s.groupsN = n
+		} else {
+			s.groupsHeap = make([]int, countDigitGroups(text))
+			digitGroups(s.groupsHeap, text)
+		}
+		s.ranGroups = true
+	}
+	groups := s.groupsHeap
+	if groups == nil {
+		groups = s.groupsBuf[:s.groupsN]
+	}
+	return p.win.findAll(p.prog.re, p.requires, groups, text)
 }

@@ -12,6 +12,16 @@ func (p *Pattern) Requires() uint64 { return uint64(p.requires) }
 // FindAll runs the pattern's matcher over text.
 func (p *Pattern) FindAll(text string) []Match { return p.matcher.FindAll(text) }
 
+// FindAllWindowed runs the pattern through the engine's windowed scan, or
+// reports false when the pattern's shape keeps the full scan.
+func (p *Pattern) FindAllWindowed(text string) ([]Match, bool) {
+	if !p.win.ok {
+		return nil, false
+	}
+	var scans scanCache
+	return scans.scan(p, text), true
+}
+
 // ByteClasses is byteClasses.
 func ByteClasses(text string) uint64 { return uint64(byteClasses(text)) }
 

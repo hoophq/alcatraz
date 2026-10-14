@@ -25,6 +25,12 @@ const (
 	classPunctBase = iota
 )
 
+// classOther stands for the bytes byteClass leaves classless — controls,
+// DEL and everything non-ASCII — in a pattern's alphabet (see
+// matchAlphabet). It is never required, since requiredClasses treats those
+// bytes as classless, so a required mask never contains it.
+const classOther classMask = 1 << 63
+
 // byteClass maps every byte to its classes.
 var byteClass = buildByteClass()
 
@@ -150,4 +156,57 @@ func charClassClasses(ranges []rune) classMask {
 		}
 	}
 	return m
+}
+
+// matchAlphabet walks a parsed regex and returns the classes a match may
+// contain: every byte of every match belongs to one of them. It is the
+// union over all literals and character classes, with classOther standing
+// for any non-ASCII or control rune, and all classes for any-char; a
+// superset is always safe, it only widens the windows the engine scans.
+func matchAlphabet(re *syntax.Regexp) classMask {
+	switch re.Op {
+	case syntax.OpLiteral:
+		var m classMask
+		fold := re.Flags&syntax.FoldCase != 0
+		for _, r := range re.Rune {
+			m |= alphabetRune(r)
+			if fold {
+				for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+					m |= alphabetRune(f)
+				}
+			}
+		}
+		return m
+	case syntax.OpCharClass:
+		var m classMask
+		for i := 0; i < len(re.Rune); i += 2 {
+			lo, hi := re.Rune[i], re.Rune[i+1]
+			for r := lo; r <= hi && r < 0x80; r++ {
+				m |= alphabetRune(r)
+			}
+			if hi >= 0x80 {
+				m |= classOther
+			}
+		}
+		return m
+	case syntax.OpAnyCharNotNL, syntax.OpAnyChar:
+		return ^classMask(0)
+	case syntax.OpCapture, syntax.OpStar, syntax.OpPlus, syntax.OpQuest, syntax.OpRepeat, syntax.OpConcat, syntax.OpAlternate:
+		var m classMask
+		for _, sub := range re.Sub {
+			m |= matchAlphabet(sub)
+		}
+		return m
+	}
+	// Empty match, no match, anchors and word boundaries consume nothing.
+	return 0
+}
+
+// alphabetRune is the alphabet class of one rune: its byte class, or
+// classOther when byteClass has none for it.
+func alphabetRune(r rune) classMask {
+	if m := runeClasses(r); m != 0 {
+		return m
+	}
+	return classOther
 }
